@@ -30,12 +30,24 @@ public class UserService {
     public ResponseEntity<?> register(RegisterRequest request) {
         Map<String, String> errors = new HashMap<>();
 
-        if (request.getName() == null || request.getName().trim().isEmpty()) {
-            errors.put("name", "Name field required");
+        String username = null;
+        if (request.getUsername() == null || request.getUsername().trim().isEmpty()) {
+            errors.put("username", "Username is required");
+        } else {
+            username = request.getUsername().trim().toLowerCase();
+            if (username.length() < 3 || username.length() > 30) {
+                errors.put("username", "Username must be between 3 and 30 characters");
+            } else if (!username.matches("^[a-zA-Z0-9_.]+$")) {
+                errors.put("username", "Username can only contain letters, numbers, underscores and dots");
+            } else if (userRepository.existsByUsername(username)) {
+                errors.put("username", "Username already taken");
+            }
         }
 
         if (request.getEmail() == null || request.getEmail().trim().isEmpty()) {
             errors.put("email", "Email field is required");
+        } else if (userRepository.existsByEmail(request.getEmail().trim().toLowerCase())) {
+            errors.put("email", "Email already exists");
         }
 
         if (request.getPassword() == null || request.getPassword().trim().isEmpty()) {
@@ -54,13 +66,13 @@ public class UserService {
             return ResponseEntity.badRequest().body(errors);
         }
 
-        if (userRepository.existsByEmail(request.getEmail().trim().toLowerCase())) {
-            errors.put("email", "Email already exists");
-            return ResponseEntity.badRequest().body(errors);
-        }
+        String displayName = (request.getName() != null && !request.getName().trim().isEmpty())
+                ? request.getName().trim()
+                : username;
 
         User user = User.builder()
-                .name(request.getName().trim())
+                .username(username)
+                .name(displayName)
                 .email(request.getEmail().trim().toLowerCase())
                 .password(passwordEncoder.encode(request.getPassword()))
                 .build();
@@ -69,6 +81,7 @@ public class UserService {
 
         UserDto userDto = UserDto.builder()
                 .id(savedUser.getId())
+                .username(savedUser.getUsername())
                 .name(savedUser.getName())
                 .email(savedUser.getEmail())
                 .createdAt(savedUser.getCreatedAt())
@@ -80,8 +93,15 @@ public class UserService {
     public ResponseEntity<?> login(LoginRequest request) {
         Map<String, String> errors = new HashMap<>();
 
-        if (request.getEmail() == null || request.getEmail().trim().isEmpty()) {
-            errors.put("email", "Email field is required");
+        String identifier = "";
+        if (request.getUsername() != null && !request.getUsername().trim().isEmpty()) {
+            identifier = request.getUsername().trim();
+        } else if (request.getEmail() != null && !request.getEmail().trim().isEmpty()) {
+            identifier = request.getEmail().trim();
+        }
+
+        if (identifier.isEmpty()) {
+            errors.put("email", "Username or Email is required");
         }
 
         if (request.getPassword() == null || request.getPassword().trim().isEmpty()) {
@@ -92,9 +112,9 @@ public class UserService {
             return ResponseEntity.badRequest().body(errors);
         }
 
-        Optional<User> optionalUser = userRepository.findByEmail(request.getEmail().trim().toLowerCase());
+        Optional<User> optionalUser = userRepository.findByUsernameIgnoreCaseOrEmailIgnoreCase(identifier, identifier);
         if (optionalUser.isEmpty()) {
-            errors.put("emailNotFound", "Email Not Found");
+            errors.put("emailNotFound", "User Not Found");
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errors);
         }
 
@@ -111,6 +131,7 @@ public class UserService {
                 .success(true)
                 .token(token)
                 .id(user.getId())
+                .username(user.getUsername())
                 .name(user.getName())
                 .email(user.getEmail())
                 .build();
@@ -118,11 +139,12 @@ public class UserService {
         return ResponseEntity.ok(response);
     }
 
-    public ResponseEntity<?> getCurrentUser(String email) {
-        return userRepository.findByEmail(email)
+    public ResponseEntity<?> getCurrentUser(String identifier) {
+        return userRepository.findByUsernameIgnoreCaseOrEmailIgnoreCase(identifier, identifier)
                 .map(user -> ResponseEntity.ok(
                         UserDto.builder()
                                 .id(user.getId())
+                                .username(user.getUsername())
                                 .name(user.getName())
                                 .email(user.getEmail())
                                 .createdAt(user.getCreatedAt())

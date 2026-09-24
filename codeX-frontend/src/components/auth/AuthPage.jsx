@@ -6,8 +6,10 @@ export default function AuthPage({ onAuthSuccess }) {
   const [mode, setMode] = useState('login'); // 'login' | 'register'
 
   // Form states
+  const [username, setUsername] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [loginIdentifier, setLoginIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
 
@@ -17,14 +19,6 @@ export default function AuthPage({ onAuthSuccess }) {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
   const [successBanner, setSuccessBanner] = useState('');
-
-  const clearForm = () => {
-    setName('');
-    setEmail('');
-    setPassword('');
-    setPassword2('');
-    setErrors({});
-  };
 
   const handleTabChange = (newMode) => {
     setMode(newMode);
@@ -40,13 +34,18 @@ export default function AuthPage({ onAuthSuccess }) {
 
     try {
       if (mode === 'register') {
-        const res = await authApi.register(name, email, password, password2);
-        setSuccessBanner('Account created successfully! Please sign in.');
+        const cleanUsername = username.trim().startsWith('@')
+          ? username.trim().substring(1)
+          : username.trim();
+
+        await authApi.register(cleanUsername, name, email, password, password2);
+        setSuccessBanner(`Account @${cleanUsername} created successfully! Please sign in.`);
         setMode('login');
+        setLoginIdentifier(cleanUsername);
         setPassword('');
         setPassword2('');
       } else {
-        const res = await authApi.login(email, password);
+        const res = await authApi.login(loginIdentifier, password);
         if (onAuthSuccess) {
           onAuthSuccess(res);
         }
@@ -64,6 +63,7 @@ export default function AuthPage({ onAuthSuccess }) {
 
   const emailError = errors.email || errors.emailNotFound;
   const passwordError = errors.password || errors.passwordIncorrect;
+  const usernameError = errors.username;
 
   return (
     <div className="auth-wrapper">
@@ -76,7 +76,7 @@ export default function AuthPage({ onAuthSuccess }) {
           <p className="auth-subtitle">
             {mode === 'login'
               ? 'Sign in to access your collaborative workspaces'
-              : 'Create an account to start sharing code in real time'}
+              : 'Create a unique username to join collaborative teams'}
           </p>
         </div>
 
@@ -113,39 +113,84 @@ export default function AuthPage({ onAuthSuccess }) {
           )}
 
           <form onSubmit={handleSubmit} noValidate>
-            {mode === 'register' && (
+            {mode === 'register' ? (
+              <>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="username">
+                    Unique Username
+                  </label>
+                  <div className="input-container">
+                    <span style={{
+                      position: 'absolute',
+                      left: '12px',
+                      color: '#94a3b8',
+                      fontSize: '0.95rem',
+                      fontWeight: 600
+                    }}>@</span>
+                    <input
+                      id="username"
+                      type="text"
+                      className={`form-input ${usernameError ? 'has-error' : ''}`}
+                      style={{ paddingLeft: '32px' }}
+                      placeholder="e.g. alex_dev"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                      autoComplete="username"
+                      required
+                    />
+                  </div>
+                  {usernameError && <span className="field-error">{usernameError}</span>}
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="name">
+                    Display Name (Optional)
+                  </label>
+                  <input
+                    id="name"
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g. Alex Turing"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    autoComplete="name"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="email">
+                    Email Address
+                  </label>
+                  <input
+                    id="email"
+                    type="email"
+                    className={`form-input ${emailError ? 'has-error' : ''}`}
+                    placeholder="name@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete="email"
+                  />
+                  {emailError && <span className="field-error">{emailError}</span>}
+                </div>
+              </>
+            ) : (
               <div className="form-group">
-                <label className="form-label" htmlFor="name">
-                  Full Name
+                <label className="form-label" htmlFor="loginIdentifier">
+                  Username or Email
                 </label>
                 <input
-                  id="name"
+                  id="loginIdentifier"
                   type="text"
-                  className={`form-input ${errors.name ? 'has-error' : ''}`}
-                  placeholder="e.g. Alex Turing"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  autoComplete="name"
+                  className={`form-input ${emailError ? 'has-error' : ''}`}
+                  placeholder="e.g. @raj or raj@example.com"
+                  value={loginIdentifier}
+                  onChange={(e) => setLoginIdentifier(e.target.value)}
+                  autoComplete="username"
+                  required
                 />
-                {errors.name && <span className="field-error">{errors.name}</span>}
+                {emailError && <span className="field-error">{emailError}</span>}
               </div>
             )}
-
-            <div className="form-group">
-              <label className="form-label" htmlFor="email">
-                Email Address
-              </label>
-              <input
-                id="email"
-                type="email"
-                className={`form-input ${emailError ? 'has-error' : ''}`}
-                placeholder="name@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-              />
-              {emailError && <span className="field-error">{emailError}</span>}
-            </div>
 
             <div className="form-group">
               <label className="form-label" htmlFor="password">

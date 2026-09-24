@@ -19,7 +19,7 @@ async function request(endpoint, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const error = new Error((data && (data.message || data.error)) || 'Request failed');
+    const error = new Error((data && (data.error || data.message)) || 'Request failed');
     error.status = response.status;
     error.data = data;
     throw error;
@@ -29,16 +29,22 @@ async function request(endpoint, options = {}) {
 }
 
 export const authApi = {
-  async login(email, password) {
+  async login(identifier, password) {
+    const isEmail = identifier.includes('@');
+    const body = isEmail
+      ? { email: identifier.trim(), password }
+      : { username: identifier.trim(), password };
+
     const data = await request('/api/users/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify(body),
     });
 
     if (data?.token) {
       localStorage.setItem('jwtToken', data.token);
       localStorage.setItem('currentUser', JSON.stringify({
         id: data.id,
+        username: data.username,
         name: data.name,
         email: data.email,
       }));
@@ -47,10 +53,10 @@ export const authApi = {
     return data;
   },
 
-  async register(name, email, password, password2) {
+  async register(username, name, email, password, password2) {
     return await request('/api/users/register', {
       method: 'POST',
-      body: JSON.stringify({ name, email, password, password2 }),
+      body: JSON.stringify({ username, name, email, password, password2 }),
     });
   },
 
@@ -86,16 +92,35 @@ export const authApi = {
 };
 
 export const roomsApi = {
-  async createRoom(title, language, roomCode) {
+  async createRoom({ title, visibility = 'PRIVATE', roomCode, initialTreeJson, language = 'plaintext' }) {
     return await request('/api/rooms', {
       method: 'POST',
-      body: JSON.stringify({ title, language, roomCode }),
+      body: JSON.stringify({ title, visibility, roomCode, initialTreeJson, language }),
     });
   },
 
   async getRoom(roomCode) {
     return await request(`/api/rooms/${roomCode}`, {
       method: 'GET',
+    });
+  },
+
+  async getMyRooms() {
+    return await request('/api/rooms/my', {
+      method: 'GET',
+    });
+  },
+
+  async getTeamRooms() {
+    return await request('/api/rooms/team', {
+      method: 'GET',
+    });
+  },
+
+  async updateVisibility(roomCode, visibility) {
+    return await request(`/api/rooms/${roomCode}/visibility`, {
+      method: 'PUT',
+      body: JSON.stringify({ visibility }),
     });
   },
 
@@ -109,6 +134,63 @@ export const roomsApi = {
     return await request(`/api/rooms/${roomCode}/tree`, {
       method: 'PUT',
       body: JSON.stringify({ fileTreeJson }),
+    });
+  },
+};
+
+export const teamApi = {
+  async getTeam() {
+    return await request('/api/team', {
+      method: 'GET',
+    });
+  },
+
+  async sendRequest({ userId, username }) {
+    return await request('/api/team/request', {
+      method: 'POST',
+      body: JSON.stringify({ userId, username }),
+    });
+  },
+
+  async getIncomingRequests() {
+    return await request('/api/team/requests/incoming', {
+      method: 'GET',
+    });
+  },
+
+  async getSentRequests() {
+    return await request('/api/team/requests/sent', {
+      method: 'GET',
+    });
+  },
+
+  async acceptRequest(requestId) {
+    return await request(`/api/team/requests/${requestId}/accept`, {
+      method: 'POST',
+    });
+  },
+
+  async rejectRequest(requestId) {
+    return await request(`/api/team/requests/${requestId}/reject`, {
+      method: 'POST',
+    });
+  },
+
+  async cancelSentRequest(requestId) {
+    return await request(`/api/team/requests/${requestId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async removeMember(memberId) {
+    return await request(`/api/team/${memberId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async searchUsers(query) {
+    return await request(`/api/team/search?q=${encodeURIComponent(query)}`, {
+      method: 'GET',
     });
   },
 };

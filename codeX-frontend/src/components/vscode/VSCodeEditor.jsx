@@ -1,18 +1,53 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
+import {
+  Files,
+  Search,
+  GitBranch,
+  Play,
+  Blocks,
+  Settings,
+  User,
+  Users,
+  Terminal as TerminalIcon,
+  Sun,
+  Moon,
+  ChevronRight,
+  ChevronDown,
+  FilePlus,
+  FolderPlus,
+  Edit2,
+  Trash2,
+  RotateCw,
+  X,
+  Copy,
+  Check,
+  Globe,
+  Lock,
+  HardDrive,
+  FolderTree,
+  MoreHorizontal,
+} from 'lucide-react';
+
 import { roomsApi } from '../../services/api';
 import { stompService } from '../../services/stompService';
+import { localFileSystem } from '../../services/localFileSystem';
+import FileIcon from './FileIcon';
+import QuickOpenModal from './QuickOpenModal';
+import CollabPopover from './CollabPopover';
+import BottomPanel from './BottomPanel';
+import TeamModal from '../team/TeamModal';
 import './VSCode.css';
 
 // Helper to determine Monaco language from file extension
 const getLanguageForFilename = (filename) => {
-  const ext = filename.split('.').pop().toLowerCase();
+  const ext = filename?.split('.').pop()?.toLowerCase();
   switch (ext) {
     case 'py': return 'python';
     case 'js': case 'jsx': return 'javascript';
     case 'ts': case 'tsx': return 'typescript';
     case 'html': return 'html';
-    case 'css': return 'css';
+    case 'css': case 'scss': return 'css';
     case 'json': return 'json';
     case 'java': return 'java';
     case 'cpp': case 'cc': case 'cxx': return 'cpp';
@@ -20,59 +55,63 @@ const getLanguageForFilename = (filename) => {
     case 'go': return 'go';
     case 'md': return 'markdown';
     case 'sql': return 'sql';
+    case 'sh': return 'shell';
     default: return 'plaintext';
   }
 };
 
-// File icon emoji helper
-const getFileIcon = (filename) => {
-  const ext = filename.split('.').pop().toLowerCase();
-  switch (ext) {
-    case 'py': return '🐍';
-    case 'js': case 'jsx': return '🟨';
-    case 'ts': case 'tsx': return '🔷';
-    case 'html': return '🌐';
-    case 'css': return '🎨';
-    case 'json': return '⚙️';
-    case 'java': return '☕';
-    case 'cpp': case 'c': return '⚙️';
-    case 'go': return '🐹';
-    case 'md': return '📝';
-    default: return '📄';
-  }
-};
-
 export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
+  // Activity Bar active tab
+  const [activeActivity, setActiveActivity] = useState('explorer'); // 'explorer' | 'search' | 'git' | 'debug' | 'extensions'
+
   // Tree state
   const [fileTree, setFileTree] = useState([]);
   const [activeFileId, setActiveFileId] = useState(null);
   const [openTabIds, setOpenTabIds] = useState([]);
-  const [expandedFolders, setExpandedFolders] = useState(new Set(['folder-src']));
+  const [expandedFolders, setExpandedFolders] = useState(new Set(['folder-root', 'folder-src']));
 
-  // Inline creation state
+  // Inline creation & rename states
   const [creatingType, setCreatingType] = useState(null); // 'file' | 'folder' | null
   const [creatingTargetFolderId, setCreatingTargetFolderId] = useState(null);
   const [newEntryName, setNewEntryName] = useState('');
-
-  // Inline rename state
   const [renamingId, setRenamingId] = useState(null);
   const [renamingName, setRenamingName] = useState('');
 
-  // Presence and sync status
-  const [participantsCount, setParticipantsCount] = useState(1);
-  const [isSynced, setIsSynced] = useState(false);
-  const [toastMessage, setToastMessage] = useState('');
-  const [copyCodeSuccess, setCopyCodeSuccess] = useState(false);
+  // Editor cursor & language state
+  const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
   const [editorTheme, setEditorTheme] = useState('vs-dark');
 
-  // References to keep STOMP callbacks referencing latest state without re-subscribing
+  // Collaboration & Live Sync
+  const [participantsCount, setParticipantsCount] = useState(1);
+  const [isSynced, setIsSynced] = useState(false);
+  const [copyCodeSuccess, setCopyCodeSuccess] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+
+  // Modals & Panels
+  const [showQuickOpen, setShowQuickOpen] = useState(false);
+  const [showCollabPopover, setShowCollabPopover] = useState(false);
+  const [showBottomPanel, setShowBottomPanel] = useState(false);
+  const [bottomPanelTab, setBottomPanelTab] = useState('terminal');
+  const [showTeamModal, setShowTeamModal] = useState(false);
+
+  // Disk Sync Status
+  const [diskSyncStatus, setDiskSyncStatus] = useState(room.localDirHandle ? 'synced' : 'none');
+
+  // References
   const fileTreeRef = useRef(fileTree);
   fileTreeRef.current = fileTree;
 
   const activeFileIdRef = useRef(activeFileId);
   activeFileIdRef.current = activeFileId;
 
+  const localFileHandlesRef = useRef(room.localFileHandles || new Map());
+  const localDirHandlesRef = useRef(room.localDirHandles || new Map());
+  if (room.localDirHandle && !localDirHandlesRef.current.has('folder-root')) {
+    localDirHandlesRef.current.set('folder-root', room.localDirHandle);
+  }
+
   const saveTimerRef = useRef(null);
+  const editorRef = useRef(null);
 
   // 1. Initial Load & Late-Joiner Full Synchronization
   useEffect(() => {
@@ -80,7 +119,6 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
     async function initializeWorkspace() {
       try {
-        // Fetch the full room state from PostgreSQL
         const roomData = await roomsApi.getRoom(room.roomCode);
 
         let initialTree = [];
@@ -92,33 +130,14 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
           initialTree = [];
         }
 
-        // Fallback default file tree if empty
+        // If empty, initialize with clean root folder (no pre-baked languages)
         if (!initialTree || initialTree.length === 0) {
           initialTree = [
-            { id: 'folder-src', name: 'src', type: 'folder', parentId: null },
             {
-              id: 'file-main-py',
-              name: 'main.py',
-              type: 'file',
-              parentId: 'folder-src',
-              language: 'python',
-              content: "# Welcome to CodeLive Collaborative Workspace\ndef main():\n    print('Hello, Collaborative World!')\n\nif __name__ == '__main__':\n    main()\n",
-            },
-            {
-              id: 'file-index-js',
-              name: 'index.js',
-              type: 'file',
-              parentId: 'folder-src',
-              language: 'javascript',
-              content: "// Real-time collaborative JavaScript\nconsole.log('Connected to shared workspace');\n",
-            },
-            {
-              id: 'file-readme',
-              name: 'README.md',
-              type: 'file',
+              id: 'folder-root',
+              name: room.title || 'Workspace',
+              type: 'folder',
               parentId: null,
-              language: 'markdown',
-              content: "# Collaborative Project Workspace\n\nAll folders, files, and edits are synchronized in real time across all connected participants.\n",
             },
           ];
         }
@@ -127,7 +146,6 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
         setFileTree(initialTree);
 
-        // Find first file to activate
         const firstFile = initialTree.find((item) => item.type === 'file');
         if (firstFile) {
           setActiveFileId(firstFile.id);
@@ -138,21 +156,19 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
         // 2. Connect to STOMP Broker for Live Real-Time Multi-User Collaboration
         await stompService.connect(room.roomCode, {
-          userName: user?.name || 'Developer',
+          userName: user?.name || user?.username || 'Developer',
 
-          // Live Participants Presence
           onPresence: (data) => {
             if (data?.usersCount !== undefined) {
               setParticipantsCount(data.usersCount);
             }
-            if (data?.type === 'JOIN' && data?.senderName && data.senderName !== user?.name) {
-              showToast(`${data.senderName} joined the workspace`);
+            if (data?.type === 'JOIN' && data?.senderName && data.senderName !== (user?.name || user?.username)) {
+              showToast(`${data.senderName} joined workspace`);
             } else if (data?.type === 'LEAVE') {
-              showToast('A participant left the workspace');
+              showToast('A teammate left workspace');
             }
           },
 
-          // Live Folder & File Tree Synchronization
           onTreeChange: (data) => {
             if (data.senderId === stompService.getClientId()) return;
 
@@ -161,14 +177,15 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               if (Array.isArray(remoteTree)) {
                 setFileTree(remoteTree);
                 setIsSynced(true);
-                showToast(`Folders synchronized (${data.type})`);
+                showToast(`Folders updated (${data.type})`);
 
-                // If active file was deleted, switch to another
                 if (data.type === 'FILE_DELETE' && !remoteTree.some((f) => f.id === activeFileIdRef.current)) {
                   const nextFile = remoteTree.find((f) => f.type === 'file');
                   if (nextFile) {
                     setActiveFileId(nextFile.id);
                     setOpenTabIds((prev) => prev.filter((id) => id !== activeFileIdRef.current).concat(nextFile.id));
+                  } else {
+                    setActiveFileId(null);
                   }
                 }
               }
@@ -177,7 +194,6 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             }
           },
 
-          // Live Code Editing Synchronization
           onCodeChange: (data) => {
             if (data.senderId === stompService.getClientId()) return;
 
@@ -186,6 +202,14 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                 item.id === data.fileId ? { ...item, content: data.code } : item
               )
             );
+
+            // Real-time disk sync: write teammate's edits to local PC file if folder is linked
+            if (room.localDirHandle && localFileHandlesRef.current.has(data.fileId)) {
+              const fileHandleObj = localFileHandlesRef.current.get(data.fileId);
+              localFileSystem.writeFileToDisk(fileHandleObj.handle, data.code).then((ok) => {
+                if (ok) setDiskSyncStatus('synced');
+              });
+            }
           },
         });
       } catch (err) {
@@ -195,8 +219,18 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
     initializeWorkspace();
 
+    // Keyboard shortcut for Quick Open (Cmd+P / Ctrl+P)
+    const handleGlobalKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setShowQuickOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('keydown', handleGlobalKeyDown);
       stompService.disconnect();
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
@@ -204,10 +238,9 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3500);
+    setTimeout(() => setToastMessage(''), 3000);
   };
 
-  // Helper to persist tree to backend debounced
   const persistTree = (updatedTree) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
@@ -215,10 +248,20 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     }, 1500);
   };
 
-  // Active file object
   const activeFile = fileTree.find((item) => item.id === activeFileId && item.type === 'file');
 
-  // Handle local code editing in Monaco
+  // Monaco Editor Mounting & Cursor Tracking
+  const handleEditorDidMount = (editor) => {
+    editorRef.current = editor;
+    editor.onDidChangeCursorPosition((e) => {
+      setCursorPos({
+        line: e.position.lineNumber,
+        col: e.position.column,
+      });
+    });
+  };
+
+  // Local Code Editing
   const handleEditorChange = (newCode) => {
     if (!activeFile) return;
 
@@ -227,15 +270,24 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     );
     setFileTree(updatedTree);
 
-    // 1. Broadcast code change live to all connected peers
+    // 1. Write directly to PC local disk file if linked
+    if (room.localDirHandle && localFileHandlesRef.current.has(activeFile.id)) {
+      setDiskSyncStatus('saving');
+      const fileHandleObj = localFileHandlesRef.current.get(activeFile.id);
+      localFileSystem.writeFileToDisk(fileHandleObj.handle, newCode).then((ok) => {
+        if (ok) setDiskSyncStatus('synced');
+      });
+    }
+
+    // 2. Broadcast live
     stompService.sendCodeChange(room.roomCode, activeFile.id, newCode);
 
-    // 2. Persist updated tree to PostgreSQL
+    // 3. Persist tree debounced
     persistTree(updatedTree);
   };
 
-  // Handle File Creation
-  const handleCreateEntry = (e) => {
+  // File / Folder Creation
+  const handleCreateEntry = async (e) => {
     e.preventDefault();
     const name = newEntryName.trim();
     if (!name) {
@@ -244,48 +296,76 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     }
 
     const newId = (creatingType === 'folder' ? 'folder-' : 'file-') + Math.random().toString(36).substring(2, 9);
+    const targetParentId = creatingTargetFolderId || (fileTree.some((f) => f.id === 'folder-root') ? 'folder-root' : null);
+
     const newEntry = {
       id: newId,
       name,
       type: creatingType,
-      parentId: creatingTargetFolderId,
+      parentId: targetParentId,
       ...(creatingType === 'file'
         ? {
             language: getLanguageForFilename(name),
-            content: `// ${name}\n`,
+            content: ``,
           }
         : {}),
     };
 
+    if (room.localDirHandle) {
+      const parentDir =
+        localDirHandlesRef.current.get(targetParentId || 'folder-root') ||
+        room.localDirHandle;
+
+      if (creatingType === 'file') {
+        const fileHandle = await localFileSystem.createFileOnDisk(parentDir, name, '');
+        if (fileHandle) {
+          localFileHandlesRef.current.set(newId, {
+            handle: fileHandle,
+            name,
+            parentDirHandle: parentDir,
+          });
+        }
+      } else {
+        const dirHandle = await localFileSystem.createFolderOnDisk(parentDir, name);
+        if (dirHandle) {
+          localDirHandlesRef.current.set(newId, dirHandle);
+        }
+      }
+    }
+
     const updatedTree = [...fileTree, newEntry];
     setFileTree(updatedTree);
 
-    // If file, open tab and set active
     if (creatingType === 'file') {
       setActiveFileId(newId);
       if (!openTabIds.includes(newId)) {
         setOpenTabIds([...openTabIds, newId]);
       }
     } else {
-      // Expand the folder
       setExpandedFolders((prev) => new Set([...prev, newId]));
     }
 
-    // Broadcast tree creation to all connected users
-    stompService.sendTreeChange(room.roomCode, 'FILE_CREATE', updatedTree, newId, user?.name);
+    stompService.sendTreeChange(room.roomCode, 'FILE_CREATE', updatedTree, newId, user?.name || user?.username);
     persistTree(updatedTree);
 
     setCreatingType(null);
     setNewEntryName('');
-    showToast(`Created ${creatingType}: ${name}`);
   };
 
-  // Handle Delete Entry
-  const handleDeleteEntry = (e, item) => {
+  // Delete Entry
+  const handleDeleteEntry = async (e, item) => {
     e.stopPropagation();
     if (!window.confirm(`Delete ${item.type} "${item.name}"?`)) return;
 
-    // Remove item and any child items if folder
+    if (room.localDirHandle) {
+      const parentDir =
+        localDirHandlesRef.current.get(item.parentId || 'folder-root') ||
+        room.localDirHandle;
+      await localFileSystem.deleteEntryFromDisk(parentDir, item.name);
+      localFileHandlesRef.current.delete(item.id);
+      localDirHandlesRef.current.delete(item.id);
+    }
+
     const idsToRemove = new Set([item.id]);
     if (item.type === 'folder') {
       fileTree.forEach((child) => {
@@ -296,21 +376,17 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     const updatedTree = fileTree.filter((f) => !idsToRemove.has(f.id));
     setFileTree(updatedTree);
 
-    // If active file deleted, pick another
     if (idsToRemove.has(activeFileId)) {
       const remainingFile = updatedTree.find((f) => f.type === 'file');
       setActiveFileId(remainingFile ? remainingFile.id : null);
     }
     setOpenTabIds((prev) => prev.filter((id) => !idsToRemove.has(id)));
 
-    // Broadcast deletion to all connected users
-    stompService.sendTreeChange(room.roomCode, 'FILE_DELETE', updatedTree, item.id, user?.name);
+    stompService.sendTreeChange(room.roomCode, 'FILE_DELETE', updatedTree, item.id, user?.name || user?.username);
     persistTree(updatedTree);
-
-    showToast(`Deleted ${item.name}`);
   };
 
-  // Handle Rename Entry
+  // Rename Entry
   const handleRenameSubmit = (e, item) => {
     e.preventDefault();
     const newName = renamingName.trim();
@@ -333,8 +409,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     setFileTree(updatedTree);
     setRenamingId(null);
 
-    // Broadcast rename to all peers
-    stompService.sendTreeChange(room.roomCode, 'FILE_RENAME', updatedTree, item.id, user?.name);
+    stompService.sendTreeChange(room.roomCode, 'FILE_RENAME', updatedTree, item.id, user?.name || user?.username);
     persistTree(updatedTree);
   };
 
@@ -356,68 +431,100 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   const handleCloseTab = (e, tabId) => {
     e.stopPropagation();
-    const nextTabs = openTabIds.filter((id) => id !== tabId);
-    setOpenTabIds(nextTabs);
+    const newTabs = openTabIds.filter((id) => id !== tabId);
+    setOpenTabIds(newTabs);
+
     if (activeFileId === tabId) {
-      setActiveFileId(nextTabs.length > 0 ? nextTabs[nextTabs.length - 1] : null);
+      if (newTabs.length > 0) {
+        setActiveFileId(newTabs[newTabs.length - 1]);
+      } else {
+        setActiveFileId(null);
+      }
     }
   };
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(room.roomCode);
     setCopyCodeSuccess(true);
+    showToast(`Room code ${room.roomCode} copied`);
     setTimeout(() => setCopyCodeSuccess(false), 2000);
   };
 
-  // Render tree node recursively or flat grouped
+  // Render Explorer File/Folder Tree
   const renderTreeItems = (parentId = null, depth = 0) => {
-    const items = fileTree.filter((item) => item.parentId === parentId);
+    const items = fileTree.filter((item) => {
+      if (parentId === null) {
+        return item.parentId === null || item.parentId === undefined;
+      }
+      return item.parentId === parentId;
+    });
 
-    // Sort folders first, then files alphabetically
     items.sort((a, b) => {
       if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
 
     return items.map((item) => {
-      if (item.type === 'folder') {
-        const isExpanded = expandedFolders.has(item.id);
+      const isFolder = item.type === 'folder';
+      const isExpanded = expandedFolders.has(item.id);
+      const isActive = activeFileId === item.id;
+      const isBeingRenamed = renamingId === item.id;
+
+      if (isFolder) {
         return (
-          <div key={item.id}>
+          <div key={item.id} className="tree-folder-group">
             <div
-              className="tree-node-item"
+              className="tree-node folder-node"
               style={{ paddingLeft: `${depth * 14 + 10}px` }}
               onClick={() => toggleFolder(item.id)}
             >
-              <span className="tree-node-icon">{isExpanded ? '📂' : '📁'}</span>
+              <span className="folder-chevron">
+                {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </span>
+              <FileIcon isFolder={true} isOpen={isExpanded} size={15} />
 
-              {renamingId === item.id ? (
-                <form onSubmit={(e) => handleRenameSubmit(e, item)} style={{ display: 'inline' }}>
+              {isBeingRenamed ? (
+                <form onSubmit={(e) => handleRenameSubmit(e, item)} onClick={(e) => e.stopPropagation()}>
                   <input
                     type="text"
+                    className="inline-rename-input"
                     value={renamingName}
                     onChange={(e) => setRenamingName(e.target.value)}
                     onBlur={() => setRenamingId(null)}
                     autoFocus
-                    style={{ background: '#3c3c3c', border: '1px solid #007acc', color: 'white', fontSize: '12px' }}
                   />
                 </form>
               ) : (
-                <span className="tree-node-name">{item.name}</span>
+                <span className="folder-name">{item.name}</span>
               )}
 
-              <div className="tree-node-actions">
+              {/* Hover-only contextual CRUD actions */}
+              <div className="node-hover-actions">
                 <button
                   className="node-btn"
-                  title="New File Inside"
+                  title="New File inside"
                   onClick={(e) => {
                     e.stopPropagation();
                     setCreatingType('file');
                     setCreatingTargetFolderId(item.id);
-                    setExpandedFolders((p) => new Set([...p, item.id]));
+                    setNewEntryName('');
+                    setExpandedFolders((prev) => new Set([...prev, item.id]));
                   }}
                 >
-                  📄
+                  <FilePlus size={13} />
+                </button>
+                <button
+                  className="node-btn"
+                  title="New Subfolder"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCreatingType('folder');
+                    setCreatingTargetFolderId(item.id);
+                    setNewEntryName('');
+                    setExpandedFolders((prev) => new Set([...prev, item.id]));
+                  }}
+                >
+                  <FolderPlus size={13} />
                 </button>
                 <button
                   className="node-btn"
@@ -428,64 +535,73 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                     setRenamingName(item.name);
                   }}
                 >
-                  ✏️
+                  <Edit2 size={12} />
                 </button>
                 <button
-                  className="node-btn"
-                  title="Delete"
+                  className="node-btn delete-btn"
+                  title="Delete Folder"
                   onClick={(e) => handleDeleteEntry(e, item)}
                 >
-                  🗑️
+                  <Trash2 size={12} />
                 </button>
               </div>
             </div>
 
-            {/* Inline creation inside this folder */}
-            {creatingType && creatingTargetFolderId === item.id && (
-              <form onSubmit={handleCreateEntry} className="tree-inline-input" style={{ paddingLeft: `${(depth + 1) * 14 + 10}px` }}>
-                <input
-                  type="text"
-                  placeholder={creatingType === 'file' ? 'filename.py' : 'folder-name'}
-                  value={newEntryName}
-                  onChange={(e) => setNewEntryName(e.target.value)}
-                  onBlur={() => setCreatingType(null)}
-                  autoFocus
-                />
-              </form>
+            {/* Folder Children with clean indentation guides */}
+            {isExpanded && (
+              <div className="folder-children" style={{ borderLeft: depth > 0 ? '1px solid rgba(255, 255, 255, 0.06)' : 'none', marginLeft: `${depth * 14 + 16}px` }}>
+                {creatingType && creatingTargetFolderId === item.id && (
+                  <form
+                    onSubmit={handleCreateEntry}
+                    className="inline-create-form"
+                    style={{ paddingLeft: '8px' }}
+                  >
+                    <FileIcon isFolder={creatingType === 'folder'} isOpen={false} size={14} />
+                    <input
+                      type="text"
+                      className="inline-create-input"
+                      placeholder={`New ${creatingType} name...`}
+                      value={newEntryName}
+                      onChange={(e) => setNewEntryName(e.target.value)}
+                      onBlur={() => setCreatingType(null)}
+                      autoFocus
+                    />
+                  </form>
+                )}
+                {renderTreeItems(item.id, depth + 1)}
+              </div>
             )}
-
-            {isExpanded && renderTreeItems(item.id, depth + 1)}
           </div>
         );
       }
 
-      // File node
-      const isActive = activeFileId === item.id;
+      // File Node
       return (
         <div
           key={item.id}
-          className={`tree-node-item ${isActive ? 'active' : ''}`}
-          style={{ paddingLeft: `${depth * 14 + 10}px` }}
+          className={`tree-node file-node ${isActive ? 'active' : ''}`}
+          style={{ paddingLeft: `${depth * 14 + 14}px` }}
           onClick={() => handleSelectFile(item)}
         >
-          <span className="tree-node-icon">{getFileIcon(item.name)}</span>
+          <FileIcon filename={item.name} size={15} />
 
-          {renamingId === item.id ? (
-            <form onSubmit={(e) => handleRenameSubmit(e, item)} style={{ display: 'inline' }}>
+          {isBeingRenamed ? (
+            <form onSubmit={(e) => handleRenameSubmit(e, item)} onClick={(e) => e.stopPropagation()}>
               <input
                 type="text"
+                className="inline-rename-input"
                 value={renamingName}
                 onChange={(e) => setRenamingName(e.target.value)}
                 onBlur={() => setRenamingId(null)}
                 autoFocus
-                style={{ background: '#3c3c3c', border: '1px solid #007acc', color: 'white', fontSize: '12px' }}
               />
             </form>
           ) : (
-            <span className="tree-node-name">{item.name}</span>
+            <span className="file-name">{item.name}</span>
           )}
 
-          <div className="tree-node-actions">
+          {/* Hover-only contextual CRUD actions */}
+          <div className="node-hover-actions">
             <button
               className="node-btn"
               title="Rename"
@@ -495,14 +611,14 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                 setRenamingName(item.name);
               }}
             >
-              ✏️
+              <Edit2 size={12} />
             </button>
             <button
-              className="node-btn"
-              title="Delete"
+              className="node-btn delete-btn"
+              title="Delete File"
               onClick={(e) => handleDeleteEntry(e, item)}
             >
-              🗑️
+              <Trash2 size={12} />
             </button>
           </div>
         </div>
@@ -512,39 +628,55 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   return (
     <div className="vscode-editor-layout">
-      {/* Top Application Bar */}
+      {/* 1. TOP APPLICATION BAR (Modern Minimalist 40px) */}
       <div className="vscode-top-bar">
         <div className="top-bar-left">
           <div className="project-brand">
-            <span>&lt;/&gt;</span>
-            <span>{room.title || 'CodeLive Workspace'}</span>
+            <span className="brand-symbol">&lt;/&gt;</span>
+            <span className="brand-name">{room.title || 'Workspace'}</span>
           </div>
 
-          <div className="room-badge" onClick={copyRoomCode} title="Click to copy invite code">
-            <span>Room: {room.roomCode}</span>
-            <span>{copyCodeSuccess ? '✓ Copied' : '📋'}</span>
+          <div className="room-badge-compact" onClick={copyRoomCode} title="Click to copy room code">
+            <span className="room-label">Room</span>
+            <code>{room.roomCode}</code>
+            {copyCodeSuccess ? <Check size={12} color="#4ade80" /> : <Copy size={12} color="#858585" />}
           </div>
-        </div>
 
-        <div className="top-bar-center">
-          {activeFile ? (
-            <span>
-              {room.title} &gt; {activeFile.name}
+          {room.visibility === 'PUBLIC' && (
+            <span className="visibility-tag public" title="Public: visible to all team members">
+              <Globe size={11} /> Team
             </span>
-          ) : (
-            <span>No file selected</span>
+          )}
+
+          {room.localDirHandle && (
+            <span className="visibility-tag disk" title={`Synced directly with PC folder: ${room.localDirHandle.name}`}>
+              <HardDrive size={11} /> PC Synced
+            </span>
           )}
         </div>
 
+        {/* Center: Command Palette / Search Quick Open Trigger */}
+        <div className="top-bar-center" onClick={() => setShowQuickOpen(true)} title="Quick Open (⌘P / Ctrl+P)">
+          <Search size={13} className="quick-search-icon" />
+          <span className="quick-search-text">{room.title} &gt; Search files...</span>
+          <kbd className="quick-search-kbd">⌘P</kbd>
+        </div>
+
+        {/* Right: Live Collaboration and Actions */}
         <div className="top-bar-right">
-          <div className="sync-status-badge">
-            <div className="sync-dot"></div>
-            <span>{isSynced ? 'Live Sync Active' : 'Connecting...'}</span>
+          <div className="live-status-indicator" title="STOMP Live Collaboration Active">
+            <span className="live-pulse-dot" />
+            <span className="live-text">Live</span>
           </div>
 
-          <div className="participants-badge">
-            <span>👥 {participantsCount} Online</span>
-          </div>
+          <button
+            className="collab-users-trigger"
+            onClick={() => setShowCollabPopover(!showCollabPopover)}
+            title="Active Participants (Click for details)"
+          >
+            <Users size={13} />
+            <span>{participantsCount}</span>
+          </button>
 
           <button
             className="close-workspace-btn"
@@ -556,101 +688,151 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         </div>
       </div>
 
-      {/* Main Workspace Middle */}
+      {/* 2. MAIN WORKSPACE MIDDLE (Activity Bar + Sidebar + Editor) */}
       <div className="vscode-main-area">
-        {/* Left Activity Bar */}
+        {/* Left Activity Bar (48px VS Code style) */}
         <div className="vscode-activity-bar">
-          <button className="activity-btn active" title="Explorer">
-            📁
-          </button>
-          <button className="activity-btn" title="Search">
-            🔍
-          </button>
-          <button className="activity-btn" title="Terminal">
-            💻
-          </button>
+          <div className="activity-bar-top">
+            <button
+              className={`activity-btn ${activeActivity === 'explorer' ? 'active' : ''}`}
+              title="Explorer (Files)"
+              onClick={() => setActiveActivity('explorer')}
+            >
+              <Files size={19} />
+            </button>
+            <button
+              className={`activity-btn ${activeActivity === 'search' ? 'active' : ''}`}
+              title="Search (Quick Open)"
+              onClick={() => {
+                setActiveActivity('search');
+                setShowQuickOpen(true);
+              }}
+            >
+              <Search size={19} />
+            </button>
+            <button
+              className={`activity-btn ${activeActivity === 'git' ? 'active' : ''}`}
+              title="Source Control"
+              onClick={() => setActiveActivity('git')}
+            >
+              <GitBranch size={19} />
+            </button>
+            <button
+              className={`activity-btn ${activeActivity === 'debug' ? 'active' : ''}`}
+              title="Run & Debug"
+              onClick={() => setActiveActivity('debug')}
+            >
+              <Play size={19} />
+            </button>
+            <button
+              className={`activity-btn ${activeActivity === 'extensions' ? 'active' : ''}`}
+              title="Extensions"
+              onClick={() => setActiveActivity('extensions')}
+            >
+              <Blocks size={19} />
+            </button>
+          </div>
 
           <div className="activity-bar-bottom">
+            <button
+              className={`activity-btn ${showBottomPanel ? 'active' : ''}`}
+              title="Toggle Terminal Panel"
+              onClick={() => setShowBottomPanel(!showBottomPanel)}
+            >
+              <TerminalIcon size={19} />
+            </button>
             <button
               className="activity-btn"
               title={editorTheme === 'vs-dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
               onClick={() => setEditorTheme(editorTheme === 'vs-dark' ? 'light' : 'vs-dark')}
             >
-              {editorTheme === 'vs-dark' ? '☀️' : '🌙'}
+              {editorTheme === 'vs-dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <span style={{ fontSize: '11px', color: '#858585' }} title={user?.email}>
-              👤
-            </span>
+            <button
+              className="activity-btn"
+              title={`Logged in as @${user?.username || user?.name || 'Developer'}`}
+              onClick={() => setShowTeamModal(true)}
+            >
+              <User size={18} />
+            </button>
           </div>
         </div>
 
         {/* Primary Sidebar: File Explorer */}
-        <div className="vscode-sidebar">
-          <div className="sidebar-header">
-            <span>EXPLORER: {room.title || 'WORKSPACE'}</span>
-            <div className="sidebar-actions">
-              <button
-                className="sidebar-action-btn"
-                title="New File"
-                onClick={() => {
-                  setCreatingType('file');
-                  setCreatingTargetFolderId(null);
-                  setNewEntryName('');
-                }}
-              >
-                📄+
-              </button>
-              <button
-                className="sidebar-action-btn"
-                title="New Folder"
-                onClick={() => {
-                  setCreatingType('folder');
-                  setCreatingTargetFolderId(null);
-                  setNewEntryName('');
-                }}
-              >
-                📁+
-              </button>
-              <button
-                className="sidebar-action-btn"
-                title="Refresh Workspace"
-                onClick={() => {
-                  showToast('Re-syncing folder state...');
-                  roomsApi.getRoom(room.roomCode).then((r) => {
-                    if (r.codeContent?.startsWith('[')) {
-                      setFileTree(JSON.parse(r.codeContent));
-                    }
-                  });
-                }}
-              >
-                🔄
-              </button>
+        {activeActivity === 'explorer' && (
+          <div className="vscode-sidebar">
+            <div className="sidebar-header">
+              <span className="sidebar-header-title">EXPLORER</span>
+              <div className="sidebar-actions">
+                <button
+                  className="sidebar-action-btn"
+                  title="New File"
+                  onClick={() => {
+                    setCreatingType('file');
+                    setCreatingTargetFolderId(null);
+                    setNewEntryName('');
+                  }}
+                >
+                  <FilePlus size={14} />
+                </button>
+                <button
+                  className="sidebar-action-btn"
+                  title="New Folder"
+                  onClick={() => {
+                    setCreatingType('folder');
+                    setCreatingTargetFolderId(null);
+                    setNewEntryName('');
+                  }}
+                >
+                  <FolderPlus size={14} />
+                </button>
+                <button
+                  className="sidebar-action-btn"
+                  title="Collapse All Folders"
+                  onClick={() => setExpandedFolders(new Set())}
+                >
+                  <FolderTree size={14} />
+                </button>
+              </div>
+            </div>
+
+            {/* Folder Root Title */}
+            <div className="sidebar-root-row">
+              <ChevronDown size={14} />
+              <span className="sidebar-root-title">{(room.title || 'WORKSPACE').toUpperCase()}</span>
+            </div>
+
+            <div className="file-tree-container">
+              {creatingType && creatingTargetFolderId === null && (
+                <form onSubmit={handleCreateEntry} className="inline-create-form" style={{ paddingLeft: '14px' }}>
+                  <FileIcon isFolder={creatingType === 'folder'} isOpen={false} size={14} />
+                  <input
+                    type="text"
+                    className="inline-create-input"
+                    placeholder={`New ${creatingType} name...`}
+                    value={newEntryName}
+                    onChange={(e) => setNewEntryName(e.target.value)}
+                    onBlur={() => setCreatingType(null)}
+                    autoFocus
+                  />
+                </form>
+              )}
+
+              {renderTreeItems(null, 0)}
+
+              {fileTree.length <= 1 && !creatingType && (
+                <div className="tree-empty-prompt">
+                  <p>Folder is empty.</p>
+                  <p>Click <FilePlus size={13} style={{ display: 'inline', verticalAlign: 'middle' }} /> above to create a file.</p>
+                </div>
+              )}
             </div>
           </div>
-
-          {/* File Tree */}
-          <div className="file-tree-container">
-            {/* Inline creation at root level */}
-            {creatingType && creatingTargetFolderId === null && (
-              <form onSubmit={handleCreateEntry} className="tree-inline-input">
-                <input
-                  type="text"
-                  placeholder={creatingType === 'file' ? 'filename.py' : 'folder-name'}
-                  value={newEntryName}
-                  onChange={(e) => setNewEntryName(e.target.value)}
-                  onBlur={() => setCreatingType(null)}
-                  autoFocus
-                />
-              </form>
-            )}
-
-            {renderTreeItems(null, 0)}
-          </div>
-        </div>
+        )}
 
         {/* Editor Main Content Pane */}
         <div className="vscode-editor-main">
-          {/* Open Tabs */}
+          {/* Editor Tabs Bar (Modern Compact 36px) */}
           <div className="editor-tabs-bar">
             {openTabIds.map((tabId) => {
               const file = fileTree.find((f) => f.id === tabId);
@@ -662,26 +844,28 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                   className={`editor-tab ${isActive ? 'active' : ''}`}
                   onClick={() => setActiveFileId(tabId)}
                 >
-                  <span>{getFileIcon(file.name)}</span>
-                  <span>{file.name}</span>
+                  <FileIcon filename={file.name} size={14} />
+                  <span className="tab-name">{file.name}</span>
                   <button
                     className="tab-close-btn"
+                    title="Close"
                     onClick={(e) => handleCloseTab(e, tabId)}
                   >
-                    ×
+                    <X size={12} />
                   </button>
                 </div>
               );
             })}
           </div>
 
-          {/* Breadcrumbs */}
+          {/* Breadcrumbs Row (Clean 24px) */}
           <div className="editor-breadcrumbs">
-            <span className="breadcrumb-item">{room.title || 'Workspace'}</span>
+            <span className="breadcrumb-root">{room.title || 'Workspace'}</span>
             {activeFile && (
               <>
-                <span className="breadcrumb-separator">&gt;</span>
-                <span className="breadcrumb-item">{activeFile.name}</span>
+                <ChevronRight size={12} className="breadcrumb-chevron" />
+                <FileIcon filename={activeFile.name} size={13} />
+                <span className="breadcrumb-file">{activeFile.name}</span>
               </>
             )}
           </div>
@@ -694,64 +878,154 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                 theme={editorTheme}
                 language={activeFile.language || 'plaintext'}
                 value={activeFile.content || ''}
+                onMount={handleEditorDidMount}
                 onChange={handleEditorChange}
                 options={{
-                  fontSize: 14,
-                  minimap: { enabled: true },
+                  fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, 'Courier New', monospace",
+                  fontSize: 13.5,
+                  lineHeight: 22,
+                  minimap: {
+                    enabled: true,
+                    maxColumn: 80,
+                    renderCharacters: false,
+                    scale: 1,
+                  },
                   scrollBeyondLastLine: false,
                   smoothScrolling: true,
                   automaticLayout: true,
                   tabSize: 2,
                   wordWrap: 'on',
+                  bracketPairColorization: { enabled: true },
+                  cursorBlinking: 'smooth',
+                  renderLineHighlight: 'all',
+                  padding: { top: 8, bottom: 8 },
                 }}
               />
             ) : (
-              <div
-                style={{
-                  height: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: '#858585',
-                  fontSize: '14px',
-                }}
-              >
-                Select a file from the explorer to begin editing
+              <div className="editor-empty-state">
+                <div className="empty-state-symbol">&lt;/&gt;</div>
+                <div className="empty-state-title">No File Open</div>
+                <div className="empty-state-sub">Select a file from the explorer or create a new one to begin coding</div>
+                <button
+                  className="empty-create-btn"
+                  onClick={() => {
+                    setCreatingType('file');
+                    setCreatingTargetFolderId(null);
+                    setNewEntryName('');
+                  }}
+                >
+                  <FilePlus size={14} /> Create File
+                </button>
               </div>
             )}
           </div>
+
+          {/* Collapsible Bottom Developer Panel (Terminal / Problems / Output) */}
+          <BottomPanel
+            isOpen={showBottomPanel}
+            onClose={() => setShowBottomPanel(false)}
+            activeTab={bottomPanelTab}
+            onTabChange={(tab) => setBottomPanelTab(tab)}
+            room={room}
+            user={user}
+          />
         </div>
       </div>
 
-      {/* Bottom Status Bar */}
+      {/* 3. STATUS BAR (VS Code Style 22px) */}
       <div className="vscode-status-bar">
         <div className="status-left">
-          <div className="status-item" onClick={copyRoomCode}>
-            <span>🔗</span>
-            <span>Room: {room.roomCode}</span>
+          <div className="status-item" title="Git Branch: main">
+            <GitBranch size={12} />
+            <span>main</span>
           </div>
-          <div className="status-item">
-            <span>👥 {participantsCount} connected</span>
+
+          <div className="status-item" title="0 Errors, 0 Warnings">
+            <span>0</span>
+            <span style={{ opacity: 0.6 }}>0</span>
           </div>
-          {toastMessage && (
-            <div style={{ background: '#3c3c3c', padding: '0 6px', borderRadius: '3px' }}>
-              📢 {toastMessage}
+
+          <div className="status-item" title="STOMP Live Collaboration Active">
+            <span className="status-dot-green" />
+            <span>{isSynced ? 'Live Sync' : 'Connecting...'}</span>
+          </div>
+
+          {room.localDirHandle && (
+            <div className="status-item disk-synced" title={`PC Disk Synced: ${room.localDirHandle.name}`}>
+              <HardDrive size={11} />
+              <span>PC: {room.localDirHandle.name}</span>
             </div>
           )}
         </div>
 
         <div className="status-right">
-          <div className="status-item">
-            <span>{activeFile ? activeFile.language.toUpperCase() : 'PLAIN TEXT'}</span>
+          {activeFile && (
+            <div className="status-item" title="Cursor Line and Column">
+              <span>Ln {cursorPos.line}, Col {cursorPos.col}</span>
+            </div>
+          )}
+
+          <div className="status-item" title="Tab Spacing">
+            <span>Spaces: 2</span>
           </div>
-          <div className="status-item">
+
+          <div className="status-item" title="Character Encoding">
             <span>UTF-8</span>
           </div>
-          <div className="status-item">
-            <span>Spaces: 2</span>
+
+          <div className="status-item" title="Line Sequence">
+            <span>LF</span>
+          </div>
+
+          {activeFile && (
+            <div className="status-item language-tag" title="File Language Mode">
+              <span>{activeFile.language || 'plaintext'}</span>
+            </div>
+          )}
+
+          <div
+            className="status-item"
+            title="Toggle Bottom Terminal Panel"
+            onClick={() => setShowBottomPanel(!showBottomPanel)}
+          >
+            <TerminalIcon size={12} />
           </div>
         </div>
       </div>
+
+      {/* Quick Open Modal (⌘P / Ctrl+P) */}
+      <QuickOpenModal
+        isOpen={showQuickOpen}
+        onClose={() => setShowQuickOpen(false)}
+        files={fileTree}
+        onSelectFile={handleSelectFile}
+      />
+
+      {/* Collaboration Popover */}
+      <CollabPopover
+        isOpen={showCollabPopover}
+        onClose={() => setShowCollabPopover(false)}
+        room={room}
+        user={user}
+        participantsCount={participantsCount}
+        activeFileName={activeFile?.name}
+        onOpenTeamModal={() => setShowTeamModal(true)}
+      />
+
+      {/* Team Modal */}
+      {showTeamModal && (
+        <TeamModal
+          user={user}
+          onClose={() => setShowTeamModal(false)}
+        />
+      )}
+
+      {/* Floating Status Toast */}
+      {toastMessage && (
+        <div className="vscode-toast">
+          <span>{toastMessage}</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -30,6 +31,22 @@ public class RoomController {
         return ResponseEntity.ok(roomDto);
     }
 
+    @GetMapping("/my")
+    public ResponseEntity<List<RoomDto>> getMyRooms(@AuthenticationPrincipal UserDetails userDetails) {
+        if (userDetails == null) {
+            return ResponseEntity.ok(List.of());
+        }
+        return ResponseEntity.ok(roomService.getMyRooms(userDetails.getUsername()));
+    }
+
+    @GetMapping("/team")
+    public ResponseEntity<List<RoomDto>> getTeamRooms(@AuthenticationPrincipal UserDetails userDetails) {
+        if (userDetails == null) {
+            return ResponseEntity.ok(List.of());
+        }
+        return ResponseEntity.ok(roomService.getTeamRooms(userDetails.getUsername()));
+    }
+
     @GetMapping("/{roomCode}")
     public ResponseEntity<RoomDto> getRoom(@PathVariable String roomCode) {
         return roomService.getRoom(roomCode)
@@ -41,6 +58,18 @@ public class RoomController {
     public ResponseEntity<Map<String, Boolean>> checkRoom(@PathVariable String roomCode) {
         boolean exists = roomService.exists(roomCode);
         return ResponseEntity.ok(Map.of("exists", exists));
+    }
+
+    @PutMapping("/{roomCode}/visibility")
+    public ResponseEntity<RoomDto> updateVisibility(
+            @PathVariable String roomCode,
+            @RequestBody Map<String, String> payload,
+            @AuthenticationPrincipal UserDetails userDetails
+    ) {
+        String visibility = payload.getOrDefault("visibility", "PRIVATE");
+        String identifier = userDetails != null ? userDetails.getUsername() : null;
+        RoomDto updated = roomService.updateVisibility(roomCode, visibility, identifier);
+        return ResponseEntity.ok(updated);
     }
 
     @PutMapping("/{roomCode}/code")

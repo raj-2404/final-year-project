@@ -17,6 +17,10 @@ public class RoomDto {
     private String title;
     private String language;
     private String codeContent;
+    private String visibility; // "PUBLIC" or "PRIVATE"
+    private Long ownerId;
+    private String ownerUsername;
+    private String ownerName;
     private String createdBy;
     private int participantsCount;
     private Instant createdAt;

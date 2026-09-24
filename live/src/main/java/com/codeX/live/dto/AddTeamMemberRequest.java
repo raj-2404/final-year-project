@@ -5,16 +5,11 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.Instant;
-
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class UserDto {
-    private Long id;
+public class AddTeamMemberRequest {
+    private Long userId;
     private String username;
-    private String name;
-    private String email;
-    private Instant createdAt;
 }

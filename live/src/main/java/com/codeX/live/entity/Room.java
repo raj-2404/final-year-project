@@ -31,14 +31,22 @@ public class Room {
 
     @Column(nullable = false, length = 50)
     @Builder.Default
-    private String language = "javascript";
+    private String language = "plaintext";
 
     @Column(columnDefinition = "TEXT")
     @Builder.Default
-    private String codeContent = "";
+    private String codeContent = "[]";
 
     @Column(name = "created_by", length = 255)
     private String createdBy;
+
+    @Column(length = 20, nullable = false)
+    @Builder.Default
+    private String visibility = "PRIVATE"; // "PUBLIC" (Team visible) or "PRIVATE"
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id")
+    private User owner;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

@@ -32,6 +32,7 @@ public class JwtTokenProvider {
         return Jwts.builder()
                 .subject(user.getEmail())
                 .claim("id", user.getId())
+                .claim("username", user.getUsername())
                 .claim("name", user.getName())
                 .claim("email", user.getEmail())
                 .issuedAt(now)

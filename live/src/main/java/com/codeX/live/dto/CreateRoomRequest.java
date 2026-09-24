@@ -13,4 +13,6 @@ public class CreateRoomRequest {
     private String roomCode;
     private String title;
     private String language;
+    private String visibility; // "PUBLIC" or "PRIVATE"
+    private String initialTreeJson; // Optional custom initial tree (e.g., from PC folder)
 }

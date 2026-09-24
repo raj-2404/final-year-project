@@ -1,21 +1,21 @@
 package com.codeX.live.dto;
 
-import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.Instant;
+
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class LoginRequest {
-
-    // Can be either username or email
+public class TeamMemberDto {
+    private Long id;
+    private Long memberId;
     private String username;
+    private String name;
     private String email;
-
-    @NotBlank(message = "Password field is required")
-    private String password;
+    private Instant joinedAt;
 }
