@@ -1,5 +1,6 @@
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
+import { terminalApi } from './api';
 
 class StompCollaborationService {
   constructor() {
@@ -12,9 +13,13 @@ class StompCollaborationService {
   connect(roomCode, callbacks = {}) {
     this.disconnect();
 
+    const wsEndpoint =
+      import.meta.env.VITE_WS_URL ||
+      (typeof window !== 'undefined' && (window.__TAURI_INTERNALS__ || window.__TAURI__) ? 'http://localhost:5010/ws' : '/ws');
+
     return new Promise((resolve, reject) => {
       this.client = new Client({
-        webSocketFactory: () => new SockJS('/ws'),
+        webSocketFactory: () => new SockJS(wsEndpoint),
         reconnectDelay: 3000,
         heartbeatIncoming: 4000,
         heartbeatOutgoing: 4000,
@@ -159,6 +164,119 @@ class StompCollaborationService {
         roomCode,
         title,
         senderId: this.clientId,
+      }),
+    });
+  }
+
+  // --- Collaborative Native Terminal Methods ---
+
+  subscribeTerminal(roomCode, onTerminalOutput) {
+    if (!this.connected || !this.client) return null;
+    this.unsubscribeTerminal();
+
+    const sub = this.client.subscribe(`/topic/room/${roomCode}/terminal/output`, (message) => {
+      try {
+        const data = JSON.parse(message.body);
+        if (onTerminalOutput) onTerminalOutput(data);
+      } catch (e) {
+        console.error('Error parsing terminal output message', e);
+      }
+    });
+
+    this.subscriptions.set('terminal', sub);
+    return sub;
+  }
+
+  unsubscribeTerminal() {
+    const sub = this.subscriptions.get('terminal');
+    if (sub) {
+      try {
+        sub.unsubscribe();
+      } catch {}
+      this.subscriptions.delete('terminal');
+    }
+  }
+
+  sendTerminalInit(roomCode, userName) {
+    if (!this.connected || !this.client) return;
+    this.client.publish({
+      destination: `/app/room/${roomCode}/terminal/init`,
+      body: JSON.stringify({
+        roomCode,
+        senderUsername: userName || 'Developer',
+        senderId: this.clientId,
+      }),
+    });
+  }
+
+  sendTerminalStart(roomCode, userName) {
+    if (this.connected && this.client) {
+      try {
+        this.client.publish({
+          destination: `/app/room/${roomCode}/terminal/start`,
+          body: JSON.stringify({
+            roomCode,
+            senderUsername: userName || 'Developer',
+            senderId: this.clientId,
+          }),
+        });
+      } catch (err) {
+        console.warn('[Terminal] STOMP start failed, calling REST:', err);
+      }
+    }
+    // Also trigger REST for reliable start
+    terminalApi.start(roomCode).catch(() => {});
+  }
+
+  sendTerminalStop(roomCode, userName) {
+    if (this.connected && this.client) {
+      try {
+        this.client.publish({
+          destination: `/app/room/${roomCode}/terminal/stop`,
+          body: JSON.stringify({
+            roomCode,
+            senderUsername: userName || 'Developer',
+            senderId: this.clientId,
+          }),
+        });
+      } catch (err) {
+        console.warn('[Terminal] STOMP stop failed, calling REST:', err);
+      }
+    }
+    terminalApi.stop(roomCode).catch(() => {});
+  }
+
+  sendTerminalInput(roomCode, data, userName) {
+    if (this.connected && this.client) {
+      try {
+        this.client.publish({
+          destination: `/app/room/${roomCode}/terminal/input`,
+          body: JSON.stringify({
+            roomCode,
+            data,
+            senderUsername: userName || 'Developer',
+            senderId: this.clientId,
+          }),
+        });
+        return;
+      } catch (err) {
+        console.warn('[Terminal] STOMP input failed, falling back to REST:', err);
+      }
+    }
+    // Fallback to direct REST API so keystrokes are never dropped
+    terminalApi.sendInput(roomCode, data, userName).catch((err) => {
+      console.error('[Terminal] REST sendInput error:', err);
+    });
+  }
+
+  sendTerminalPermission(roomCode, allowTeammateInput, requestedBy) {
+    if (!this.connected || !this.client) return;
+    this.client.publish({
+      destination: `/app/room/${roomCode}/terminal/permission`,
+      body: JSON.stringify({
+        roomCode,
+        allowTeammateInput,
+        requestedBy,
       }),
     });
   }

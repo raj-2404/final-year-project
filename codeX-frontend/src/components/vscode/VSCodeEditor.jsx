@@ -13,6 +13,7 @@ import {
   Sun,
   Moon,
   ChevronRight,
+  ChevronLeft,
   ChevronDown,
   FilePlus,
   FolderPlus,
@@ -69,6 +70,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   const [activeFileId, setActiveFileId] = useState(null);
   const [openTabIds, setOpenTabIds] = useState([]);
   const [expandedFolders, setExpandedFolders] = useState(new Set(['folder-root', 'folder-src']));
+  const [isRootFolderCollapsed, setIsRootFolderCollapsed] = useState(false);
 
   // Inline creation & rename states
   const [creatingType, setCreatingType] = useState(null); // 'file' | 'folder' | null
@@ -219,11 +221,15 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
     initializeWorkspace();
 
-    // Keyboard shortcut for Quick Open (Cmd+P / Ctrl+P)
+    // Keyboard shortcut for Quick Open (Cmd+P / Ctrl+P) and Toggle Sidebar (Cmd+B / Ctrl+B)
     const handleGlobalKeyDown = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         setShowQuickOpen(true);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setActiveActivity((prev) => (prev ? null : 'explorer'));
       }
     };
     window.addEventListener('keydown', handleGlobalKeyDown);
@@ -648,9 +654,12 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             </span>
           )}
 
-          {room.localDirHandle && (
-            <span className="visibility-tag disk" title={`Synced directly with PC folder: ${room.localDirHandle.name}`}>
-              <HardDrive size={11} /> PC Synced
+          {(room.diskPath || room.localDirHandle) && (
+            <span
+              className="visibility-tag disk"
+              title={`OS Watcher & Physical PC Disk Synced: ${room.diskPath || room.localDirHandle?.name}`}
+            >
+              <HardDrive size={11} /> {room.diskPath ? room.diskPath.split('/').pop() : room.localDirHandle?.name}
             </span>
           )}
         </div>
@@ -695,8 +704,8 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
           <div className="activity-bar-top">
             <button
               className={`activity-btn ${activeActivity === 'explorer' ? 'active' : ''}`}
-              title="Explorer (Files)"
-              onClick={() => setActiveActivity('explorer')}
+              title={activeActivity === 'explorer' ? 'Close Explorer (⌘B)' : 'Explorer (Files)'}
+              onClick={() => setActiveActivity((prev) => (prev === 'explorer' ? null : 'explorer'))}
             >
               <Files size={19} />
             </button>
@@ -704,30 +713,34 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               className={`activity-btn ${activeActivity === 'search' ? 'active' : ''}`}
               title="Search (Quick Open)"
               onClick={() => {
-                setActiveActivity('search');
-                setShowQuickOpen(true);
+                if (activeActivity === 'search') {
+                  setActiveActivity(null);
+                } else {
+                  setActiveActivity('search');
+                  setShowQuickOpen(true);
+                }
               }}
             >
               <Search size={19} />
             </button>
             <button
               className={`activity-btn ${activeActivity === 'git' ? 'active' : ''}`}
-              title="Source Control"
-              onClick={() => setActiveActivity('git')}
+              title={activeActivity === 'git' ? 'Close Source Control' : 'Source Control'}
+              onClick={() => setActiveActivity((prev) => (prev === 'git' ? null : 'git'))}
             >
               <GitBranch size={19} />
             </button>
             <button
               className={`activity-btn ${activeActivity === 'debug' ? 'active' : ''}`}
-              title="Run & Debug"
-              onClick={() => setActiveActivity('debug')}
+              title={activeActivity === 'debug' ? 'Close Run & Debug' : 'Run & Debug'}
+              onClick={() => setActiveActivity((prev) => (prev === 'debug' ? null : 'debug'))}
             >
               <Play size={19} />
             </button>
             <button
               className={`activity-btn ${activeActivity === 'extensions' ? 'active' : ''}`}
-              title="Extensions"
-              onClick={() => setActiveActivity('extensions')}
+              title={activeActivity === 'extensions' ? 'Close Extensions' : 'Extensions'}
+              onClick={() => setActiveActivity((prev) => (prev === 'extensions' ? null : 'extensions'))}
             >
               <Blocks size={19} />
             </button>
@@ -793,40 +806,54 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                 >
                   <FolderTree size={14} />
                 </button>
+                <button
+                  className="sidebar-action-btn"
+                  title="Close Sidebar (Hide Explorer)"
+                  onClick={() => setActiveActivity(null)}
+                >
+                  <ChevronLeft size={14} />
+                </button>
               </div>
             </div>
 
             {/* Folder Root Title */}
-            <div className="sidebar-root-row">
-              <ChevronDown size={14} />
+            <div
+              className="sidebar-root-row"
+              onClick={() => setIsRootFolderCollapsed((prev) => !prev)}
+              style={{ cursor: 'pointer', userSelect: 'none' }}
+              title={isRootFolderCollapsed ? 'Expand workspace folder' : 'Collapse workspace folder'}
+            >
+              {isRootFolderCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
               <span className="sidebar-root-title">{(room.title || 'WORKSPACE').toUpperCase()}</span>
             </div>
 
-            <div className="file-tree-container">
-              {creatingType && creatingTargetFolderId === null && (
-                <form onSubmit={handleCreateEntry} className="inline-create-form" style={{ paddingLeft: '14px' }}>
-                  <FileIcon isFolder={creatingType === 'folder'} isOpen={false} size={14} />
-                  <input
-                    type="text"
-                    className="inline-create-input"
-                    placeholder={`New ${creatingType} name...`}
-                    value={newEntryName}
-                    onChange={(e) => setNewEntryName(e.target.value)}
-                    onBlur={() => setCreatingType(null)}
-                    autoFocus
-                  />
-                </form>
-              )}
+            {!isRootFolderCollapsed && (
+              <div className="file-tree-container">
+                {creatingType && creatingTargetFolderId === null && (
+                  <form onSubmit={handleCreateEntry} className="inline-create-form" style={{ paddingLeft: '14px' }}>
+                    <FileIcon isFolder={creatingType === 'folder'} isOpen={false} size={14} />
+                    <input
+                      type="text"
+                      className="inline-create-input"
+                      placeholder={`New ${creatingType} name...`}
+                      value={newEntryName}
+                      onChange={(e) => setNewEntryName(e.target.value)}
+                      onBlur={() => setCreatingType(null)}
+                      autoFocus
+                    />
+                  </form>
+                )}
 
-              {renderTreeItems(null, 0)}
+                {renderTreeItems(null, 0)}
 
-              {fileTree.length <= 1 && !creatingType && (
-                <div className="tree-empty-prompt">
-                  <p>Folder is empty.</p>
-                  <p>Click <FilePlus size={13} style={{ display: 'inline', verticalAlign: 'middle' }} /> above to create a file.</p>
-                </div>
-              )}
-            </div>
+                {fileTree.length <= 1 && !creatingType && (
+                  <div className="tree-empty-prompt">
+                    <p>Folder is empty.</p>
+                    <p>Click <FilePlus size={13} style={{ display: 'inline', verticalAlign: 'middle' }} /> above to create a file.</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -950,10 +977,10 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             <span>{isSynced ? 'Live Sync' : 'Connecting...'}</span>
           </div>
 
-          {room.localDirHandle && (
-            <div className="status-item disk-synced" title={`PC Disk Synced: ${room.localDirHandle.name}`}>
+          {(room.diskPath || room.localDirHandle) && (
+            <div className="status-item disk-synced" title={`Physical Disk Synced: ${room.diskPath || room.localDirHandle?.name}`}>
               <HardDrive size={11} />
-              <span>PC: {room.localDirHandle.name}</span>
+              <span>{room.diskPath ? room.diskPath.split('/').pop() : room.localDirHandle?.name}</span>
             </div>
           )}
         </div>

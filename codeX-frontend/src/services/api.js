@@ -1,4 +1,6 @@
-const API_BASE_URL = '';
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  (typeof window !== 'undefined' && (window.__TAURI_INTERNALS__ || window.__TAURI__) ? 'http://localhost:5010' : '');
 
 /**
  * Helper to make API requests with optional authentication header
@@ -194,3 +196,32 @@ export const teamApi = {
     });
   },
 };
+
+export const terminalApi = {
+  async getState(roomCode) {
+    return await request(`/api/rooms/${roomCode}/terminal/state`, {
+      method: 'GET',
+    });
+  },
+  async start(roomCode) {
+    return await request(`/api/rooms/${roomCode}/terminal/start`, {
+      method: 'POST',
+    });
+  },
+  async stop(roomCode) {
+    return await request(`/api/rooms/${roomCode}/terminal/stop`, {
+      method: 'POST',
+    });
+  },
+  async sendInput(roomCode, data, senderUsername) {
+    return await request(`/api/rooms/${roomCode}/terminal/input`, {
+      method: 'POST',
+      body: JSON.stringify({
+        roomCode,
+        data,
+        senderUsername,
+      }),
+    });
+  },
+};
+

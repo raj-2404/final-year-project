@@ -74,6 +74,7 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
           title: room.title,
           language: room.language,
           visibility: room.visibility,
+          diskPath: room.diskPath,
           ownerName: room.ownerName || room.ownerUsername,
           openedAt: new Date().toLocaleDateString(),
         },
@@ -456,7 +457,12 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
                   >
                     <div>
                       <div className="recent-name">{recent.title || 'Untitled Project'}</div>
-                      <div style={{ fontSize: '11px', color: '#858585' }}>
+                      <div style={{ fontSize: '11px', color: '#858585', marginTop: '2px' }}>
+                        {recent.diskPath ? (
+                          <span style={{ color: '#4ade80', marginRight: '6px' }}>
+                            📁 {recent.diskPath.split('/').slice(-2).join('/')}
+                          </span>
+                        ) : null}
                         Opened {recent.openedAt || 'recently'}
                         {recent.visibility && (
                           <span style={{ marginLeft: '6px', color: recent.visibility === 'PUBLIC' ? '#60a5fa' : '#858585' }}>
