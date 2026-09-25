@@ -19,6 +19,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { stompService } from '../../services/stompService';
 import { terminalApi } from '../../services/api';
+import { isDesktopApp } from '../../services/native/platform';
+import TerminalPanel from './terminal/TerminalPanel';
+import ProcessConsole from './ProcessConsole';
 
 export default function BottomPanel({
   isOpen,
@@ -46,6 +49,7 @@ export default function BottomPanel({
   const isRunningRef = useRef(false);
 
   const currentUsername = user?.username || user?.name || 'developer';
+  const isDesktop = isDesktopApp();
 
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -57,9 +61,9 @@ export default function BottomPanel({
     }
   }, [activeTab]);
 
-  // Query backend state on mount or room change
+  // Query backend state on mount or room change (Web only)
   const checkTerminalState = useCallback(async () => {
-    if (!room?.roomCode) return;
+    if (isDesktop || !room?.roomCode) return;
     try {
       const state = await terminalApi.getState(room.roomCode);
       if (state) {
@@ -84,9 +88,9 @@ export default function BottomPanel({
 
   const pendingHistoryRef = useRef('');
 
-  // Subscribe to STOMP Terminal events
+  // Subscribe to STOMP Terminal events (Web only)
   useEffect(() => {
-    if (!room?.roomCode) return;
+    if (isDesktop || !room?.roomCode) return;
 
     const sub = stompService.subscribeTerminal(room.roomCode, (msg) => {
       if (msg.hostUsername) setHostUsername(msg.hostUsername);
@@ -159,9 +163,9 @@ export default function BottomPanel({
     }
   }, [isOpen, currentTab, isRunning, focusTerminal]);
 
-  // Mount xterm when isRunning is true and terminal container is available
+  // Mount xterm when isRunning is true and terminal container is available (Web only)
   useEffect(() => {
-    if (!isOpen || currentTab !== 'terminal' || !isRunning || !terminalContainerRef.current) {
+    if (isDesktop || !isOpen || currentTab !== 'terminal' || !isRunning || !terminalContainerRef.current) {
       return;
     }
 
@@ -418,8 +422,15 @@ export default function BottomPanel({
         <div className="bottom-panel-actions">
           {currentTab === 'terminal' && (
             <div className="terminal-header-controls">
-              {/* Running Status Pill */}
-              {isRunning ? (
+              {isDesktop ? (
+                <div
+                  className="terminal-live-share-pill running"
+                  title="Local PTY Terminal Engine (Host OS Shell)"
+                >
+                  <span className="live-dot" style={{ backgroundColor: '#22c55e' }} />
+                  <span className="live-label">LOCAL • PTY</span>
+                </div>
+              ) : isRunning ? (
                 <>
                   <div
                     className="terminal-live-share-pill running"
@@ -504,72 +515,76 @@ export default function BottomPanel({
         }
       >
         {currentTab === 'terminal' && (
-          <div
-            className="panel-terminal-view"
-            onClick={focusTerminal}
-            onMouseDown={focusTerminal}
-            style={{
-              flex: 1,
-              height: '100%',
-              minHeight: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              position: 'relative',
-              overflow: 'hidden',
-              cursor: 'text',
-            }}
-          >
-            {isRunning ? (
-              <div
-                ref={terminalContainerRef}
-                className="xterm-terminal-container"
-                onClick={focusTerminal}
-                onMouseDown={focusTerminal}
-                tabIndex={0}
-                style={{
-                  flex: 1,
-                  width: '100%',
-                  height: '100%',
-                  minHeight: '80px',
-                  position: 'relative',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div className="terminal-idle-state">
-                <div className="terminal-idle-card">
-                  <div className="terminal-idle-icon-wrapper">
-                    <TerminalIcon size={26} />
+          isDesktop ? (
+            <TerminalPanel projectRoot={room?.diskPath || null} />
+          ) : (
+            <div
+              className="panel-terminal-view"
+              onClick={focusTerminal}
+              onMouseDown={focusTerminal}
+              style={{
+                flex: 1,
+                height: '100%',
+                minHeight: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                position: 'relative',
+                overflow: 'hidden',
+                cursor: 'text',
+              }}
+            >
+              {isRunning ? (
+                <div
+                  ref={terminalContainerRef}
+                  className="xterm-terminal-container"
+                  onClick={focusTerminal}
+                  onMouseDown={focusTerminal}
+                  tabIndex={0}
+                  style={{
+                    flex: 1,
+                    width: '100%',
+                    height: '100%',
+                    minHeight: '80px',
+                    position: 'relative',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div className="terminal-idle-state">
+                  <div className="terminal-idle-card">
+                    <div className="terminal-idle-icon-wrapper">
+                      <TerminalIcon size={26} />
+                    </div>
+                    <div className="terminal-idle-title">Terminal is not running</div>
+                    <div className="terminal-idle-subtitle">
+                      Project Workspace: <code>{room?.title || 'Current Project'}</code>
+                    </div>
+                    <div className="terminal-idle-description">
+                      Start an interactive native shell in your project's physical folder. Anyone in this room can start the terminal, and once started, it is visible and fully interactive for all teammates.
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-start-terminal"
+                      onClick={handleStartTerminal}
+                      disabled={isStarting}
+                    >
+                      {isStarting ? (
+                        <>
+                          <Loader2 size={14} className="spin" />
+                          <span>Starting Terminal...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play size={14} fill="currentColor" />
+                          <span>Start Terminal</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                  <div className="terminal-idle-title">Terminal is not running</div>
-                  <div className="terminal-idle-subtitle">
-                    Project Workspace: <code>{room?.title || 'Current Project'}</code>
-                  </div>
-                  <div className="terminal-idle-description">
-                    Start an interactive native shell in your project's physical folder. Anyone in this room can start the terminal, and once started, it is visible and fully interactive for all teammates.
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-start-terminal"
-                    onClick={handleStartTerminal}
-                    disabled={isStarting}
-                  >
-                    {isStarting ? (
-                      <>
-                        <Loader2 size={14} className="spin" />
-                        <span>Starting Terminal...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Play size={14} fill="currentColor" />
-                        <span>Start Terminal</span>
-                      </>
-                    )}
-                  </button>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )
         )}
 
         {currentTab === 'problems' && (
@@ -583,18 +598,15 @@ export default function BottomPanel({
           <div className="panel-output-view">
             <div>[LiveSync] Connected to collaborative room: {room?.roomCode}</div>
             <div>[Storage] PostgreSQL synchronization active (debounced 1.5s)</div>
-            <div>[Terminal] Native ZSH session bridge ready</div>
-            <div>[Status] {isRunning ? 'Terminal is RUNNING and shared with all members' : 'Terminal is STOPPED'}</div>
+            <div>[Terminal] {isDesktop ? 'Local PTY Engine Active (Isolated)' : 'Native ZSH session bridge ready'}</div>
+            <div>[Status] {isDesktop ? 'Native Desktop Terminal session' : (isRunning ? 'Terminal is RUNNING and shared with all members' : 'Terminal is STOPPED')}</div>
             <div>[Protocol] STOMP v1.2 over SockJS WebSocket transport</div>
             <div>[User] Active user: @{currentUsername}</div>
           </div>
         )}
 
         {currentTab === 'debug' && (
-          <div className="panel-empty-state">
-            <Bug size={24} color="#858585" />
-            <span>Debug session idle. Start debugging from the activity bar.</span>
-          </div>
+          <ProcessConsole projectRoot={room?.diskPath || null} />
         )}
       </div>
     </div>

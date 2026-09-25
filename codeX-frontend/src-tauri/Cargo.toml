@@ -23,3 +23,11 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.6", features = [] }
 tauri-plugin-log = "2"
+portable-pty = "0.8"
+notify = "6.1"
+rfd = "0.15"
+open = "5.3"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+regex = "1.11"
+which = "7.0"

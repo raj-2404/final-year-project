@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { roomsApi, teamApi } from '../../services/api';
 import { localFileSystem } from '../../services/localFileSystem';
+import { filesystemService, isDesktopApp } from '../../services/native';
 import TeamModal from '../team/TeamModal';
 import './VSCode.css';
 
@@ -113,6 +114,47 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
   // 2. Open Folder from PC with direct native disk sync
   const handleOpenFromPc = async () => {
     setError('');
+
+    if (isDesktopApp()) {
+      setOpeningPcFolder(true);
+      try {
+        const folderData = await filesystemService.pickFolder();
+        if (!folderData) {
+          setOpeningPcFolder(false);
+          return;
+        }
+
+        let room;
+        try {
+          room = await roomsApi.createRoom({
+            title: folderData.name,
+            visibility: projectVisibility,
+            initialTreeJson: JSON.stringify(folderData.entries),
+          });
+        } catch {
+          room = {
+            roomCode: 'local-' + Math.random().toString(36).substring(2, 8),
+            title: folderData.name,
+            visibility: 'LOCAL',
+            codeContent: JSON.stringify(folderData.entries),
+          };
+        }
+
+        room.diskPath = folderData.path;
+        room.initialTree = folderData.entries;
+
+        saveToRecents(room);
+        if (onOpenWorkspace) {
+          onOpenWorkspace(room);
+        }
+      } catch (err) {
+        setError(err.message || 'Failed to open local folder');
+      } finally {
+        setOpeningPcFolder(false);
+      }
+      return;
+    }
+
     if (!localFileSystem.isSupported()) {
       alert('Your browser does not support the File System Access API. Please open in Google Chrome, Microsoft Edge, or Opera.');
       return;
@@ -174,7 +216,23 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
   const handleOpenWorkspaceDirectly = async (workspace) => {
     setLoading(true);
     try {
-      const room = await roomsApi.getRoom(workspace.roomCode);
+      let room;
+      try {
+        room = await roomsApi.getRoom(workspace.roomCode);
+      } catch {
+        room = { ...workspace };
+      }
+
+      if (workspace.diskPath) {
+        room.diskPath = workspace.diskPath;
+        if (isDesktopApp()) {
+          try {
+            const entries = await filesystemService.listDirectory(workspace.diskPath);
+            room.codeContent = JSON.stringify(entries);
+          } catch {}
+        }
+      }
+
       saveToRecents(room);
       if (onOpenWorkspace) {
         onOpenWorkspace(room);

@@ -1,127 +1,147 @@
-# CodeX Frontend & Desktop Application
+# CodeX Collaborative Code Editor & Desktop Development Environment
 
-> A collaborative code editor inspired by VS Code, available both as a browser-based web application and as a native cross-platform desktop application powered by **Tauri 2**.
-
----
-
-## 1. Application Modes
-
-| Mode | Platform | Shell / Engine | URL / Protocol |
-|---|---|---|---|
-| **Web Application** | Modern Web Browsers | Vite + React 19 | `http://localhost:3000` |
-| **Desktop Application** | macOS (Apple Silicon / Intel), Windows, Linux | Tauri 2 + Native WebView | `tauri://localhost` / Native Window (1400x900) |
-
-The React frontend codebase is **100% shared** between the web and desktop environments. No separate UI or branching is required.
+> A modern, collaborative code editor inspired by VS Code, available both as a browser-based web application and as a native desktop development environment powered by **Tauri 2**.
 
 ---
 
-## 2. Desktop Development
+## 1. Target Architecture & Security Boundary
+
+CodeX Desktop cleanly separates local machine capabilities from the remote collaboration backend:
+
+```
+                    CODEX DESKTOP
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+           React UI              Tauri 2
+              │                     │
+      ┌───────┼────────┐     ┌──────┼────────────┐
+      │       │        │     │      │            │
+    Monaco  xterm   Explorer Files Terminal     Git
+              │              │      │            │
+              └──────────────┴──────┴────────────┘
+                             │
+                        LOCAL MACHINE
+                             │
+                  ┌──────────┼──────────┐
+                  │          │          │
+                Files      Shell       Git
+                            │          │
+                  ▼          ▼          ▼
+               macOS / Windows / Linux
+
+
+                         +
+                         │
+                  HTTPS / WebSocket
+                         │
+                         ▼
+                  EXISTING BACKEND
+                         │
+                  Collaboration
+                  Authentication
+                  Rooms
+                  Presence
+                  Shared state
+```
+
+### The Fundamental Rule
+- **REMOTE** = collaboration, rooms, presence, shared code synchronization via STOMP/WebSocket.
+- **LOCAL** = terminal PTY sessions, local filesystem, Git repositories, background processes, environment variables, credentials.
+
+**Security Guarantee**: Remote room participants can never execute commands, delete files, start processes, or access Git credentials on another participant's machine.
+
+---
+
+## 2. Integrated Local Capabilities
+
+### Integrated Terminal (Real PTY)
+- Powered by `portable-pty` on Rust and `xterm.js` + `@xterm/addon-fit` on React.
+- Runs the user's real host shell:
+  - **macOS**: `/bin/zsh`, `/bin/bash`, Homebrew shells, `fish`.
+  - **Windows**: PowerShell, Windows PowerShell (`powershell.exe`), `pwsh.exe`, `cmd.exe`, Git Bash.
+  - **Linux**: `/bin/bash`, `/bin/zsh`, `fish`.
+- Full host environment inheritance: `PATH`, `HOME`, `USER`, `NVM`, `JAVA_HOME`, Python venvs, Docker, Git config.
+- Multiple independent sessions: Create (`+`), shell selector dropdown, Close (`X`), Restart, Rename, Split side-by-side.
+- Direct raw byte streaming: ANSI colors, cursor positioning, Unicode, interactive programs (`vim`, `htop`, `git diff`, etc.).
+- Responsive dynamic resize: Automatically sends terminal dimensions (`pty.resize(cols, rows)`) upon window or panel resize.
+
+### Local Filesystem & Monaco Editor
+- **Native Folder Picker**: Native OS dialog (`rfd`) to open real local repositories and folders.
+- **Local File Explorer**: Directly renders project directory trees, lazily loading file contents.
+- **Ignored Directories**: Fast traversing skips `.git`, `node_modules`, `target`, `dist`, `build`, `.next`.
+- **Editor Persistence**: Monaco reads and writes directly to local disk paths.
+- **Dirty State**: Displays `●` on tab headers when unsaved changes exist; prompts confirmation dialog before closing unsaved tabs or projects.
+- **Native File Watcher**: `notify` crate watches the project directory for external changes, updating explorer and prompting reload on conflicts.
+- **Context Actions**: Create File, Create Folder, Rename, Delete (with confirmation), and Reveal in System File Manager (Finder / File Explorer).
+
+### Git Integration & Diff Editor
+- **Local Git Binary**: Executes operations directly on the user's machine using host credentials and SSH keys (no credentials stored in CodeX).
+- **Status Indicators**: Visual status indicators in Explorer (`M` for modified, `U` for untracked, `S` for staged, `D` for deleted).
+- **Source Control Panel**: Full panel in Activity Bar displaying staged changes, unstaged changes, commit message input, Commit button, Branch switcher, Pull, and Push.
+- **Monaco Diff Editor**: Click any modified file to view side-by-side or inline diff against Git HEAD.
+
+### Process Management & Port Detection
+- **Run & Debug Panel**: Auto-detects project configurations from `.codex/project.json` or `package.json` (`dev`, `build`, `start`, `test`).
+- **Background Execution**: Spawns isolated local child processes, tracking PID, status, exit codes, and output logs in the `DEBUG CONSOLE`.
+- **Port Detection**: Regex scans process output for local URLs (e.g. `http://localhost:5173`, `http://localhost:8080`), showing an instant **"Open in Browser"** link.
+- **Process Cleanup**: When CodeX exits, all spawned PTY terminals and managed background processes are cleanly terminated.
+
+### Command Palette & Keyboard Shortcuts
+- `Cmd/Ctrl + Shift + P`: Searchable Command Palette with native commands.
+- `Cmd/Ctrl + P`: Quick Open file search.
+- `Cmd/Ctrl + S`: Save active file to disk.
+- `Cmd/Ctrl + Shift + S`: Save As (native file dialog).
+- `Cmd/Ctrl + W`: Close active editor tab (with dirty check).
+- `Cmd/Ctrl + \``: Toggle bottom developer panel (Terminal / Debug).
+- `Cmd/Ctrl + B`: Toggle primary sidebar (Explorer / Git / Debug).
+
+---
+
+## 3. Getting Started & Development
 
 ### Prerequisites
-
-1. **Node.js**: v18+ (tested on Node 26)
-2. **Rust & Cargo**: v1.77+ (install via `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-3. **Platform-specific dependencies**:
-   - **macOS**: Xcode Command Line Tools (`xcode-select --install`). Supports Apple Silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`).
+1. **Node.js**: v18+
+2. **Rust & Cargo**: v1.77+ (`rustup`)
+3. **Platform Build Tools**:
+   - **macOS**: Xcode Command Line Tools (`xcode-select --install`).
    - **Windows**: Microsoft C++ Build Tools & WebView2.
    - **Linux**: `libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `libssl-dev`.
 
----
+### Running the Application
 
-## 3. Quick Start & Scripts
-
-### Run Web Application (Browser)
 ```bash
-# Start Vite development server
+# 1. Run Web Application in browser
 npm run dev
-```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### Run Desktop Application (Tauri 2 Development)
-```bash
-# Launches the native desktop application window with live HMR
+# 2. Run Desktop Application with live HMR
 npm run tauri:dev
 ```
 
-### Build Web Production Bundle
-```bash
-npm run build
-```
-Generates production assets in `dist/`.
+### Running Tests
 
-### Build Desktop Production Application
 ```bash
-# Builds native desktop executable
+# Frontend build verification
+npm run build
+
+# Rust native backend unit tests
+cd src-tauri && cargo test
+```
+
+### Building Desktop Production Installers
+
+```bash
 npm run tauri:build
 ```
-On macOS, this produces:
-- Binary: `src-tauri/target/release/codex`
-- App Bundle: `src-tauri/target/release/bundle/macos/CodeX.app`
-- DMG Installer: `src-tauri/target/release/bundle/dmg/CodeX_1.0.0_aarch64.dmg`
+Produces:
+- **macOS**: `.app` bundle and `.dmg` installer in `src-tauri/target/release/bundle/dmg/`
+- **Windows**: `.msi` and `.exe` installer in `src-tauri/target/release/bundle/msi/`
+- **Linux**: `.deb` and `.AppImage` in `src-tauri/target/release/bundle/appimage/`
 
 ---
 
-## 4. Architecture & Security Boundary
+## 4. Web Version Compatibility
 
-```
-                 CodeX Desktop
-                      │
-              ┌───────┴───────┐
-              │               │
-           React            Tauri
-              │               │
-              ▼               ▼
-       Remote Backend     Local OS
-              │               │
-       ┌──────┴──────┐    Native Features:
-       │             │    - Environment detection
-     REST          WS     - Window management
-       │             │    - Future: PTY Terminal
-       ▼             ▼    - Future: Native Filesystem
-    CodeX API     Rooms
-```
-
-- **Remote Backend**: The desktop application continues to communicate directly with the CodeX backend service via REST (`http://localhost:5010/api` or `VITE_API_BASE_URL`) and WebSocket (`http://localhost:5010/ws` or `VITE_WS_URL`).
-- **Least Privilege**: The Tauri configuration uses least-privilege permissions (`core:default`), with no unnecessary filesystem or shell execution capabilities exposed until explicitly needed.
-
----
-
-## 5. Project Structure
-
-```
-codeX-frontend/
-├── src/
-│   ├── components/       # VS Code editor, sidebar, auth, terminal, tabs
-│   ├── services/         # api.js (REST), stompService.js (WebSocket LiveSync)
-│   ├── native/           # Centralized platform & native abstractions
-│   │   ├── environment.js# isDesktopApp(), getAppType()
-│   │   ├── platform.js   # isMacOS(), isWindows(), getPlatform()
-│   │   ├── filesystem.js # Native FS hooks (Phase 2)
-│   │   ├── terminal.js   # Native PTY hooks (Phase 3)
-│   │   └── dialogs.js    # Native dialog hooks (Phase 2)
-│   ├── App.jsx           # Root view controller
-│   └── main.jsx          # React entrypoint
-│
-├── src-tauri/            # Tauri 2 Desktop Shell
-│   ├── src/
-│   │   ├── platform/     # Rust platform abstractions (macos, windows, linux)
-│   │   ├── lib.rs        # Tauri builder & commands
-│   │   └── main.rs       # Application entrypoint
-│   ├── capabilities/     # Tauri 2 security permissions (least privilege)
-│   ├── icons/            # App icons (32x32, 128x128, .icns, .ico)
-│   ├── Cargo.toml        # Rust package configuration
-│   └── tauri.conf.json   # Desktop window (1400x900) & bundle config
-│
-├── package.json
-└── vite.config.js        # Configured for both web and desktop with relative base
-```
-
----
-
-## 6. Future Desktop Roadmap
-
-- **Phase 1 (Completed)**: Tauri 2 native window foundation, environment detection, and dual-mode web/desktop build.
-- **Phase 2**: Native filesystem integration (`openFolder`, file watching, save dialogs).
-- **Phase 3**: Embedded interactive terminal powered by native PTY / `codex-agent`.
-- **Phase 4**: Local Git status integration and process runner.
-- **Phase 5**: Auto-updater, code signing, and platform distribution installers.
+CodeX retains 100% browser compatibility:
+- In a web browser (`!isDesktopApp()`), the filesystem service falls back to the browser's File System Access API.
+- Desktop-only capabilities (PTY shell execution, direct Git CLI, host process manager) gracefully inform web users while keeping the collaborative shared STOMP terminal active.
