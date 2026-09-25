@@ -384,3 +384,72 @@
   font-weight: 500;
   word-break: break-all;
 }
+
+/* Modal Overlay & Offline Mode button */
+.auth-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background-color: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  padding: 1.5rem;
+  box-sizing: border-box;
+}
+
+.auth-card-modal {
+  position: relative;
+  width: 100%;
+  max-width: 460px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.auth-close-btn {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.4rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  z-index: 10;
+}
+
+.auth-close-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.auth-offline-btn {
+  display: block;
+  width: 100%;
+  margin-top: 1rem;
+  padding: 0.65rem 1rem;
+  background: transparent;
+  border: 1px dashed var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.auth-offline-btn:hover {
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+

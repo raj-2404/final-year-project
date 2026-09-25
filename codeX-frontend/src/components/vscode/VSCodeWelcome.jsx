@@ -19,7 +19,7 @@ import { filesystemService, isDesktopApp } from '../../services/native';
 import TeamModal from '../team/TeamModal';
 import './VSCode.css';
 
-export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
+export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLoginClick }) {
   const [modalMode, setModalMode] = useState(null); // 'new' | 'join' | null
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [teamCount, setTeamCount] = useState(0);
@@ -40,6 +40,12 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
   const [error, setError] = useState('');
 
   const refreshData = async () => {
+    if (!user) {
+      setTeamCount(0);
+      setPendingRequestsCount(0);
+      setTeamWorkspaces([]);
+      return;
+    }
     try {
       const [teamData, incoming, teamRooms] = await Promise.all([
         teamApi.getTeam().catch(() => ({ count: 0 })),
@@ -93,11 +99,30 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
 
     try {
       const title = projectNameInput.trim() || 'My-Project-Folder';
-      const room = await roomsApi.createRoom({
-        title,
-        visibility: projectVisibility,
-        initialTreeJson: '[]',
-      });
+      let room = null;
+
+      if (user) {
+        try {
+          room = await roomsApi.createRoom({
+            title,
+            visibility: projectVisibility,
+            initialTreeJson: '[]',
+          });
+        } catch (apiErr) {
+          console.warn('[Welcome] Backend unavailable, continuing in offline mode:', apiErr);
+        }
+      }
+
+      if (!room) {
+        room = {
+          roomCode: 'local-' + Math.random().toString(36).substring(2, 9),
+          title,
+          visibility: 'LOCAL',
+          isOffline: true,
+          codeContent: '[]',
+          initialTree: [],
+        };
+      }
 
       saveToRecents(room);
       setModalMode(null);
@@ -124,18 +149,25 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
           return;
         }
 
-        let room;
-        try {
-          room = await roomsApi.createRoom({
-            title: folderData.name,
-            visibility: projectVisibility,
-            initialTreeJson: JSON.stringify(folderData.entries),
-          });
-        } catch {
+        let room = null;
+        if (user) {
+          try {
+            room = await roomsApi.createRoom({
+              title: folderData.name,
+              visibility: projectVisibility,
+              initialTreeJson: JSON.stringify(folderData.entries),
+            });
+          } catch (apiErr) {
+            console.warn('[Welcome] Backend unavailable, opening folder locally:', apiErr);
+          }
+        }
+
+        if (!room) {
           room = {
-            roomCode: 'local-' + Math.random().toString(36).substring(2, 8),
+            roomCode: 'local-' + Math.random().toString(36).substring(2, 9),
             title: folderData.name,
             visibility: 'LOCAL',
+            isOffline: true,
             codeContent: JSON.stringify(folderData.entries),
           };
         }
@@ -164,15 +196,33 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
     try {
       const { folderName, dirHandle, tree, fileHandles, dirHandles } = await localFileSystem.openDirectory();
 
-      const room = await roomsApi.createRoom({
-        title: folderName,
-        visibility: projectVisibility,
-        initialTreeJson: JSON.stringify(tree),
-      });
+      let room = null;
+      if (user) {
+        try {
+          room = await roomsApi.createRoom({
+            title: folderName,
+            visibility: projectVisibility,
+            initialTreeJson: JSON.stringify(tree),
+          });
+        } catch (apiErr) {
+          console.warn('[Welcome] Backend unavailable, opening browser folder locally:', apiErr);
+        }
+      }
+
+      if (!room) {
+        room = {
+          roomCode: 'local-' + Math.random().toString(36).substring(2, 9),
+          title: folderName,
+          visibility: 'LOCAL',
+          isOffline: true,
+          codeContent: JSON.stringify(tree),
+        };
+      }
 
       room.localDirHandle = dirHandle;
       room.localFileHandles = fileHandles;
       room.localDirHandles = dirHandles;
+      room.initialTree = tree;
 
       saveToRecents(room);
       if (onOpenWorkspace) {
@@ -197,6 +247,11 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
       return;
     }
 
+    if (!user) {
+      setError('Please sign in or register to join remote collaborative rooms.');
+      return;
+    }
+
     setLoading(true);
     try {
       const room = await roomsApi.getRoom(code);
@@ -206,7 +261,7 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
         onOpenWorkspace(room);
       }
     } catch (err) {
-      setError('Room not found. Check the code and try again.');
+      setError('Room not found or backend unreachable. Check the code and try again.');
     } finally {
       setLoading(false);
     }
@@ -255,74 +310,123 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* Team Members Button */}
-          <button
-            onClick={() => setShowTeamModal(true)}
-            style={{
-              background: '#007acc',
-              border: 'none',
-              color: '#ffffff',
-              padding: '4px 10px',
-              borderRadius: '4px',
-              fontSize: '11.5px',
-              fontWeight: 500,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.12s ease',
-            }}
-            title="Manage Team Members and Invitations"
-          >
-            <Users size={13} />
-            <span>Team Members</span>
-            <span style={{
-              background: 'rgba(255, 255, 255, 0.22)',
-              padding: '1px 6px',
-              borderRadius: '10px',
-              fontSize: '10.5px',
-              fontWeight: 700,
-            }}>
-              {teamCount}
-            </span>
-            {pendingRequestsCount > 0 && (
-              <span style={{
-                background: '#ef4444',
-                color: '#ffffff',
-                padding: '1px 5px',
-                borderRadius: '10px',
-                fontSize: '10px',
-                fontWeight: 700,
-              }}>
-                {pendingRequestsCount} new
+          {user ? (
+            <>
+              {/* Team Members Button */}
+              <button
+                onClick={() => setShowTeamModal(true)}
+                style={{
+                  background: '#007acc',
+                  border: 'none',
+                  color: '#ffffff',
+                  padding: '4px 10px',
+                  borderRadius: '4px',
+                  fontSize: '11.5px',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'all 0.12s ease',
+                }}
+                title="Manage Team Members and Invitations"
+              >
+                <Users size={13} />
+                <span>Team Members</span>
+                <span style={{
+                  background: 'rgba(255, 255, 255, 0.22)',
+                  padding: '1px 6px',
+                  borderRadius: '10px',
+                  fontSize: '10.5px',
+                  fontWeight: 700,
+                }}>
+                  {teamCount}
+                </span>
+                {pendingRequestsCount > 0 && (
+                  <span style={{
+                    background: '#ef4444',
+                    color: '#ffffff',
+                    padding: '1px 5px',
+                    borderRadius: '10px',
+                    fontSize: '10px',
+                    fontWeight: 700,
+                  }}>
+                    {pendingRequestsCount} new
+                  </span>
+                )}
+              </button>
+
+              <span style={{ color: '#4ec9b0', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <User size={13} />
+                <span>@{user?.username || user?.name || 'Developer'}</span>
+                {user?.id && <span style={{ color: '#858585', fontSize: '11px' }}>#{user.id}</span>}
               </span>
-            )}
-          </button>
 
-          <span style={{ color: '#4ec9b0', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}>
-            <User size={13} />
-            <span>@{user?.username || user?.name || 'Developer'}</span>
-            {user?.id && <span style={{ color: '#858585', fontSize: '11px' }}>#{user.id}</span>}
-          </span>
+              <button
+                onClick={onLogout}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  color: '#cccccc',
+                  padding: '4px 10px',
+                  borderRadius: '4px',
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  transition: 'all 0.12s ease',
+                }}
+                title="Sign out of CodeX"
+              >
+                <LogOut size={12} />
+                <span>Sign Out</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <span style={{
+                background: 'rgba(255, 170, 0, 0.12)',
+                border: '1px solid rgba(255, 170, 0, 0.25)',
+                color: '#e5c07b',
+                padding: '3px 8px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px'
+              }}
+              title="You are currently working in offline mode. Live collaboration requires an account."
+              >
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#e5c07b' }}></span>
+                Offline Mode
+              </span>
 
-          <button
-            onClick={onLogout}
-            style={{
-              background: 'transparent',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              color: '#cccccc',
-              padding: '3px 8px',
-              borderRadius: '4px',
-              fontSize: '11px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-            }}
-          >
-            <LogOut size={12} />
-            <span>Sign Out</span>
-          </button>
+              <button
+                onClick={onLoginClick}
+                style={{
+                  background: '#007acc',
+                  border: 'none',
+                  color: '#ffffff',
+                  padding: '4px 12px',
+                  borderRadius: '4px',
+                  fontSize: '11.5px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.25)',
+                  transition: 'all 0.12s ease',
+                }}
+                title="Sign In or Sign Up to enable live collaboration and team workspaces"
+              >
+                <User size={13} />
+                <span>Sign In / Sign Up</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -345,11 +449,17 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
               {/* Team Management */}
               <div
                 className="welcome-action-item"
-                onClick={() => setShowTeamModal(true)}
+                onClick={() => {
+                  if (user) {
+                    setShowTeamModal(true);
+                  } else {
+                    onLoginClick?.();
+                  }
+                }}
               >
                 <Users size={16} />
                 <span>
-                  Team Members ({teamCount})
+                  Team Members {user ? `(${teamCount})` : '(Sign in required)'}
                   {pendingRequestsCount > 0 && (
                     <span style={{
                       marginLeft: '8px',
@@ -365,9 +475,11 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout }) {
                   )}
                 </span>
                 <span className="welcome-action-desc">
-                  {pendingRequestsCount > 0
-                    ? `${pendingRequestsCount} invitation(s) pending`
-                    : 'Manage collaborators'}
+                  {user
+                    ? (pendingRequestsCount > 0
+                        ? `${pendingRequestsCount} invitation(s) pending`
+                        : 'Manage collaborators')
+                    : 'Sign in to access team spaces and live rooms'}
                 </span>
               </div>
 

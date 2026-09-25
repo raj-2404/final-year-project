@@ -74,6 +74,13 @@ const getLanguageForFilename = (filename) => {
 
 export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   const isDesktop = isDesktopApp();
+  const isOffline = Boolean(
+    room.isOffline ||
+    !room.roomCode ||
+    room.roomCode.startsWith('local-') ||
+    !user?.id ||
+    user?.id === 'offline-local-user'
+  );
 
   // Activity Bar active tab
   const [activeActivity, setActiveActivity] = useState('explorer'); // 'explorer' | 'search' | 'git' | 'debug' | 'extensions'
@@ -153,7 +160,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   };
 
   const persistTree = (updatedTree) => {
-    if (!room.roomCode || room.roomCode.startsWith('local-')) return;
+    if (isOffline || !room.roomCode || room.roomCode.startsWith('local-')) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       roomsApi.updateTree(room.roomCode, JSON.stringify(updatedTree)).catch(console.error);
@@ -186,8 +193,8 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
           } catch {}
         }
 
-        // Check remote backend if roomCode exists
-        if ((!initialTree || initialTree.length === 0) && room.roomCode && !room.roomCode.startsWith('local-')) {
+        // Check remote backend if roomCode exists and online
+        if (!isOffline && (!initialTree || initialTree.length === 0) && room.roomCode && !room.roomCode.startsWith('local-')) {
           try {
             const roomData = await roomsApi.getRoom(room.roomCode);
             if (roomData.codeContent && roomData.codeContent.trim().startsWith('[')) {
@@ -231,8 +238,8 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         setIsSynced(true);
         refreshGitStatus();
 
-        // 2. Connect to STOMP Broker for Live Real-Time Multi-User Collaboration (if not purely local)
-        if (room.roomCode && !room.roomCode.startsWith('local-')) {
+        // 2. Connect to STOMP Broker for Live Real-Time Multi-User Collaboration (if online)
+        if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
           await stompService.connect(room.roomCode, {
             userName: user?.name || user?.username || 'Developer',
 
@@ -300,10 +307,12 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
     return () => {
       isMounted = false;
-      stompService.disconnect();
+      if (!isOffline) {
+        stompService.disconnect();
+      }
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [room.roomCode, room.diskPath]);
+  }, [room.roomCode, room.diskPath, isOffline]);
 
   // 2. Native File Watcher for Desktop
   useEffect(() => {
@@ -391,7 +400,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     }
 
     // Broadcast live over STOMP
-    if (room.roomCode && !room.roomCode.startsWith('local-')) {
+    if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
       stompService.sendCodeChange(room.roomCode, activeFile.id, newCode);
     }
 
@@ -533,7 +542,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       setExpandedFolders((prev) => new Set([...prev, newId]));
     }
 
-    if (room.roomCode && !room.roomCode.startsWith('local-')) {
+    if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
       stompService.sendTreeChange(room.roomCode, 'FILE_CREATE', updatedTree, newId, user?.name || user?.username);
     }
     persistTree(updatedTree);
@@ -587,7 +596,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       return next;
     });
 
-    if (room.roomCode && !room.roomCode.startsWith('local-')) {
+    if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
       stompService.sendTreeChange(room.roomCode, 'FILE_DELETE', updatedTree, item.id, user?.name || user?.username);
     }
     persistTree(updatedTree);
@@ -632,7 +641,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     setFileTree(updatedTree);
     setRenamingId(null);
 
-    if (room.roomCode && !room.roomCode.startsWith('local-')) {
+    if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
       stompService.sendTreeChange(room.roomCode, 'FILE_RENAME', updatedTree, item.id, user?.name || user?.username);
     }
     persistTree(updatedTree);
@@ -1153,13 +1162,15 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             <span className="brand-name">{room.title || 'Workspace'}</span>
           </div>
 
-          <div className="room-badge-compact" onClick={copyRoomCode} title="Click to copy room code">
-            <span className="room-label">Room</span>
-            <code>{room.roomCode}</code>
-            {copyCodeSuccess ? <Check size={12} color="#4ade80" /> : <Copy size={12} color="#858585" />}
-          </div>
+          {!isOffline && room.roomCode && (
+            <div className="room-badge-compact" onClick={copyRoomCode} title="Click to copy room code">
+              <span className="room-label">Room</span>
+              <code>{room.roomCode}</code>
+              {copyCodeSuccess ? <Check size={12} color="#4ade80" /> : <Copy size={12} color="#858585" />}
+            </div>
+          )}
 
-          {room.visibility === 'PUBLIC' && (
+          {room.visibility === 'PUBLIC' && !isOffline && (
             <span className="visibility-tag public" title="Public: visible to all team members">
               <Globe size={11} /> Team
             </span>
@@ -1186,28 +1197,44 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
           <kbd className="quick-search-kbd">⇧⌘P</kbd>
         </div>
 
-        {/* Right: Live Collaboration and Actions */}
+        {/* Right: Live Collaboration or Offline indicator, and Actions */}
         <div className="top-bar-right">
-          {room.roomCode && !room.roomCode.startsWith('local-') ? (
-            <div className="live-status-indicator" title="STOMP Live Collaboration Active">
-              <span className="live-pulse-dot" />
-              <span className="live-text">Live</span>
+          {isOffline ? (
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: 'rgba(255, 170, 0, 0.12)',
+                border: '1px solid rgba(255, 170, 0, 0.25)',
+                color: '#e5c07b',
+                padding: '3px 8px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontWeight: 600,
+              }}
+              title="Offline Mode: Collaborative live sync disabled. Local editing, terminal, and git are fully functional."
+            >
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#e5c07b' }}></span>
+              Offline Mode
             </div>
           ) : (
-            <div className="live-status-indicator" title="Local Offline / Isolated Desktop Session">
-              <span className="live-pulse-dot" style={{ backgroundColor: '#60a5fa' }} />
-              <span className="live-text" style={{ color: '#60a5fa' }}>Local</span>
-            </div>
-          )}
+            <>
+              <div className="live-status-indicator" title="STOMP Live Collaboration Active">
+                <span className="live-pulse-dot" />
+                <span className="live-text">Live</span>
+              </div>
 
-          <button
-            className="collab-users-trigger"
-            onClick={() => setShowCollabPopover(!showCollabPopover)}
-            title="Active Participants (Click for details)"
-          >
-            <Users size={13} />
-            <span>{participantsCount}</span>
-          </button>
+              <button
+                className="collab-users-trigger"
+                onClick={() => setShowCollabPopover(!showCollabPopover)}
+                title="Active Participants (Click for details)"
+              >
+                <Users size={13} />
+                <span>{participantsCount}</span>
+              </button>
+            </>
+          )}
 
           <button
             className="close-workspace-btn"
@@ -1613,8 +1640,17 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
           </div>
 
           <div className="status-item" title="Collaboration / Session Status">
-            <span className="status-dot-green" />
-            <span>{isSynced ? 'Live Sync' : 'Connecting...'}</span>
+            {isOffline ? (
+              <>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#e5c07b', display: 'inline-block', marginRight: 4 }} />
+                <span style={{ color: '#e5c07b' }}>Offline Mode</span>
+              </>
+            ) : (
+              <>
+                <span className="status-dot-green" />
+                <span>{isSynced ? 'Live Sync' : 'Connecting...'}</span>
+              </>
+            )}
           </div>
 
           {(room.diskPath || room.localDirHandle) && (

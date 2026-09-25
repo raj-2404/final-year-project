@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { X } from 'lucide-react';
 import { authApi } from '../../services/api';
 import './Auth.css';
 
-export default function AuthPage({ onAuthSuccess }) {
+export default function AuthPage({ onAuthSuccess, onClose }) {
   const [mode, setMode] = useState('login'); // 'login' | 'register'
 
   // Form states
@@ -19,6 +20,16 @@ export default function AuthPage({ onAuthSuccess }) {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
   const [successBanner, setSuccessBanner] = useState('');
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && onClose) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const handleTabChange = (newMode) => {
     setMode(newMode);
@@ -65,14 +76,24 @@ export default function AuthPage({ onAuthSuccess }) {
   const passwordError = errors.password || errors.passwordIncorrect;
   const usernameError = errors.username;
 
-  return (
-    <div className="auth-wrapper">
-      <div className="auth-card">
-        <div className="auth-header">
-          <div className="auth-brand">
-            <div className="brand-icon">&lt;/&gt;</div>
-            <span className="brand-title">CodeLive</span>
-          </div>
+  const cardContent = (
+    <div className={onClose ? 'auth-card-modal' : 'auth-card'}>
+      {onClose && (
+        <button
+          type="button"
+          className="auth-close-btn"
+          onClick={onClose}
+          title="Close / Continue in Offline Mode (Esc)"
+        >
+          <X size={18} />
+        </button>
+      )}
+
+      <div className="auth-header">
+        <div className="auth-brand">
+          <div className="brand-icon">&lt;/&gt;</div>
+          <span className="brand-title">CodeX</span>
+        </div>
           <p className="auth-subtitle">
             {mode === 'login'
               ? 'Sign in to access your collaborative workspaces'
@@ -283,7 +304,34 @@ export default function AuthPage({ onAuthSuccess }) {
               </>
             )}
           </p>
+
+          {onClose && (
+            <button
+              type="button"
+              className="auth-offline-btn"
+              onClick={onClose}
+            >
+              Continue in Offline Mode
+            </button>
+          )}
         </div>
+      </div>
+  );
+
+  if (onClose) {
+    return (
+      <div className="auth-modal-overlay" onClick={onClose}>
+        <div onClick={(e) => e.stopPropagation()}>
+          {cardContent}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="auth-wrapper">
+      <div className="auth-container">
+        {cardContent}
       </div>
     </div>
   );

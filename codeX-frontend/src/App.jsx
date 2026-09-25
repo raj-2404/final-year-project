@@ -8,6 +8,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(authApi.getStoredUser());
   const [currentWorkspace, setCurrentWorkspace] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
   useEffect(() => {
     async function verifySession() {
@@ -17,9 +18,13 @@ function App() {
           const user = await authApi.getCurrentUser();
           setCurrentUser(user);
         } catch (err) {
-          // Token expired or invalid
-          authApi.logout();
-          setCurrentUser(null);
+          // If explicitly rejected with 401 or 403, clear session
+          if (err.status === 401 || err.status === 403) {
+            authApi.logout();
+            setCurrentUser(null);
+          } else {
+            console.warn('[App] Backend not reachable for session verification; continuing with stored user:', err);
+          }
         }
       }
       setLoading(false);
@@ -32,8 +37,10 @@ function App() {
     setCurrentUser({
       id: data.id,
       name: data.name,
+      username: data.username,
       email: data.email,
     });
+    setShowAuthModal(false);
   };
 
   const handleLogout = () => {
@@ -55,34 +62,46 @@ function App() {
           fontFamily: 'sans-serif',
         }}
       >
-        Loading CodeLive VS Code Workspace...
+        Loading CodeX Workspace...
       </div>
     );
   }
 
-  // 1. Not Authenticated -> Show Sign In / Sign Up
-  if (!currentUser) {
-    return <AuthPage onAuthSuccess={handleAuthSuccess} />;
-  }
-
-  // 2. Authenticated & In Active Workspace -> Show VS Code Collaborative Editor
+  // 1. If currently inside an open workspace, render the full editor
   if (currentWorkspace) {
+    const activeUser = currentUser || {
+      id: 'offline-local-user',
+      name: 'Local User',
+      username: 'local',
+    };
+
     return (
       <VSCodeEditor
         room={currentWorkspace}
-        user={currentUser}
+        user={activeUser}
         onCloseWorkspace={() => setCurrentWorkspace(null)}
       />
     );
   }
 
-  // 3. Authenticated -> Show VS Code Open Folder / Project Welcome Screen
+  // 2. Default screen is ALWAYS the VSCodeWelcome screen!
+  // Login / Register is available as a modal trigger from the top header
   return (
-    <VSCodeWelcome
-      user={currentUser}
-      onOpenWorkspace={(room) => setCurrentWorkspace(room)}
-      onLogout={handleLogout}
-    />
+    <>
+      <VSCodeWelcome
+        user={currentUser}
+        onOpenWorkspace={(room) => setCurrentWorkspace(room)}
+        onLogout={handleLogout}
+        onLoginClick={() => setShowAuthModal(true)}
+      />
+
+      {showAuthModal && (
+        <AuthPage
+          onClose={() => setShowAuthModal(false)}
+          onAuthSuccess={handleAuthSuccess}
+        />
+      )}
+    </>
   );
 }
 
