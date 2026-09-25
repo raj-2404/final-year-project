@@ -99,14 +99,27 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
 
     try {
       const title = projectNameInput.trim() || 'My-Project-Folder';
-      let room = null;
+      let diskPath = null;
+      let initialTree = [];
 
+      if (isDesktopApp()) {
+        try {
+          diskPath = await filesystemService.createProjectFolder(title);
+          if (diskPath) {
+            initialTree = await filesystemService.listDirectory(diskPath);
+          }
+        } catch (diskErr) {
+          console.warn('[Welcome] Failed to create folder on disk:', diskErr);
+        }
+      }
+
+      let room = null;
       if (user) {
         try {
           room = await roomsApi.createRoom({
             title,
             visibility: projectVisibility,
-            initialTreeJson: '[]',
+            initialTreeJson: JSON.stringify(initialTree),
           });
         } catch (apiErr) {
           console.warn('[Welcome] Backend unavailable, continuing in offline mode:', apiErr);
@@ -119,9 +132,13 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
           title,
           visibility: 'LOCAL',
           isOffline: true,
-          codeContent: '[]',
-          initialTree: [],
+          codeContent: JSON.stringify(initialTree),
         };
+      }
+
+      if (diskPath) {
+        room.diskPath = diskPath;
+        room.initialTree = initialTree;
       }
 
       saveToRecents(room);

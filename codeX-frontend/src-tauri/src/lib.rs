@@ -36,6 +36,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_desktop_info,
             // Filesystem commands
+            commands::filesystem::fs_get_default_workspace_dir,
+            commands::filesystem::fs_create_project_folder,
             commands::filesystem::fs_pick_folder,
             commands::filesystem::fs_pick_file,
             commands::filesystem::fs_save_file_dialog,

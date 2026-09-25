@@ -191,6 +191,20 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
           try {
             initialTree = await filesystemService.listDirectory(room.diskPath);
           } catch {}
+        } else if (isDesktop && !room.diskPath) {
+          // If on desktop and room has no disk path, allocate a real project folder
+          try {
+            const folderTitle = room.title || 'CodeX-Project';
+            const created = await filesystemService.createProjectFolder(folderTitle);
+            if (created) {
+              room.diskPath = created;
+              try {
+                initialTree = await filesystemService.listDirectory(created);
+              } catch {}
+            }
+          } catch (e) {
+            console.warn('[VSCodeEditor] Could not auto-allocate project directory:', e);
+          }
         }
 
         // Check remote backend if roomCode exists and online
@@ -210,6 +224,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               name: room.title || 'Workspace',
               type: 'folder',
               parentId: null,
+              path: room.diskPath || null,
             },
           ];
         }
@@ -351,7 +366,18 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         if (change.kind === 'create' || change.kind === 'remove') {
           try {
             const updated = await filesystemService.listDirectory(room.diskPath);
-            setFileTree(updated);
+            setFileTree((prevTree) => {
+              const contentMap = new Map();
+              prevTree.forEach((item) => {
+                if (item.content !== undefined) {
+                  contentMap.set(item.path || item.id, item.content);
+                }
+              });
+              return updated.map((item) => {
+                const existingContent = contentMap.get(item.path || item.id);
+                return existingContent !== undefined ? { ...item, content: existingContent } : item;
+              });
+            });
           } catch {}
         }
       })
@@ -412,9 +438,14 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   const handleSaveActiveFile = async () => {
     if (!activeFile) return;
 
-    if (isDesktop && activeFile.path) {
+    if (isDesktop && (activeFile.path || room.diskPath)) {
       try {
-        await filesystemService.writeFile(activeFile.path, activeFile.content || '');
+        const filePath = activeFile.path || `${room.diskPath.replace(/\\/g, '/').replace(/\/+$/, '')}/${activeFile.name}`;
+        await filesystemService.writeFile(filePath, activeFile.content || '');
+        if (!activeFile.path) {
+          activeFile.path = filePath;
+          setFileTree((prev) => prev.map((f) => (f.id === activeFile.id ? { ...f, path: filePath } : f)));
+        }
         setDirtyFileIds((prev) => {
           const next = new Set(prev);
           next.delete(activeFile.id);
@@ -464,20 +495,23 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   // File / Folder Creation
   const handleCreateEntry = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     const name = newEntryName.trim();
     if (!name) {
       setCreatingType(null);
+      setNewEntryName('');
       return;
     }
 
-    const targetParent = fileTree.find((f) => f.id === creatingTargetFolderId);
-    const targetParentId = creatingTargetFolderId || (fileTree.some((f) => f.id === 'folder-root') ? 'folder-root' : null);
+    const rootFolder = fileTree.find((f) => f.id === 'folder-root');
+    const targetParentId = creatingTargetFolderId || (rootFolder ? 'folder-root' : null);
+    const targetParent = fileTree.find((f) => f.id === targetParentId);
 
     let newPath = null;
     if (isDesktop && room.diskPath) {
       const parentDirPath = targetParent && targetParent.path ? targetParent.path : room.diskPath;
-      newPath = `${parentDirPath.replace(/\\/g, '/')}/${name}`;
+      const cleanParent = parentDirPath.replace(/\\/g, '/').replace(/\/+$/, '');
+      newPath = `${cleanParent}/${name}`;
       try {
         if (creatingType === 'file') {
           await filesystemService.createFile(newPath);
@@ -486,8 +520,9 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         }
         refreshGitStatus();
       } catch (err) {
-        showToast(`Failed to create: ${err.message || err}`);
+        showToast(`Failed to create ${creatingType}: ${err.message || err}`);
         setCreatingType(null);
+        setNewEntryName('');
         return;
       }
     }
@@ -530,16 +565,14 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       }
     }
 
-    const updatedTree = [...fileTree, newEntry];
+    const updatedTree = [...fileTree.filter((f) => f.id !== newId), newEntry];
     setFileTree(updatedTree);
 
     if (creatingType === 'file') {
       setActiveFileId(newId);
-      if (!openTabIds.includes(newId)) {
-        setOpenTabIds([...openTabIds, newId]);
-      }
+      setOpenTabIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]));
     } else {
-      setExpandedFolders((prev) => new Set([...prev, newId]));
+      setExpandedFolders((prev) => new Set([...prev, targetParentId, newId]));
     }
 
     if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
@@ -549,11 +582,16 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
     setCreatingType(null);
     setNewEntryName('');
+    setCreatingTargetFolderId(null);
   };
 
   // Delete Entry
   const handleDeleteEntry = async (e, item) => {
     e.stopPropagation();
+    if (item.id === 'folder-root') {
+      showToast('Cannot delete root workspace folder');
+      return;
+    }
     if (!window.confirm(`Delete ${item.type} "${item.name}"? This action cannot be undone.`)) return;
 
     if (isDesktop && item.path) {
@@ -604,7 +642,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   // Rename Entry
   const handleRenameSubmit = async (e, item) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     const newName = renamingName.trim();
     if (!newName || newName === item.name) {
       setRenamingId(null);
@@ -919,11 +957,17 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   // Render Explorer File/Folder Tree
   const renderTreeItems = (parentId = null, depth = 0) => {
+    const hasRootFolder = fileTree.some((f) => f.id === 'folder-root');
+    const effectiveParentId = parentId === null && hasRootFolder ? 'folder-root' : parentId;
+
     const items = fileTree.filter((item) => {
-      if (parentId === null) {
+      // Don't render the root container folder itself as a node in the tree
+      if (item.id === 'folder-root') return false;
+
+      if (effectiveParentId === null) {
         return item.parentId === null || item.parentId === undefined;
       }
-      return item.parentId === parentId;
+      return item.parentId === effectiveParentId;
     });
 
     items.sort((a, b) => {
@@ -970,7 +1014,22 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                     className="inline-rename-input"
                     value={renamingName}
                     onChange={(e) => setRenamingName(e.target.value)}
-                    onBlur={() => setRenamingId(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleRenameSubmit(e, item);
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setRenamingId(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (renamingName.trim() && renamingName.trim() !== item.name) {
+                        handleRenameSubmit(null, item);
+                      } else {
+                        setRenamingId(null);
+                      }
+                    }}
                     autoFocus
                   />
                 </form>
@@ -1055,7 +1114,23 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                       placeholder={`New ${creatingType} name...`}
                       value={newEntryName}
                       onChange={(e) => setNewEntryName(e.target.value)}
-                      onBlur={() => setCreatingType(null)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleCreateEntry(e);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setCreatingType(null);
+                          setNewEntryName('');
+                        }
+                      }}
+                      onBlur={() => {
+                        if (newEntryName.trim()) {
+                          handleCreateEntry();
+                        } else {
+                          setCreatingType(null);
+                        }
+                      }}
                       autoFocus
                     />
                   </form>
@@ -1084,7 +1159,22 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                 className="inline-rename-input"
                 value={renamingName}
                 onChange={(e) => setRenamingName(e.target.value)}
-                onBlur={() => setRenamingId(null)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleRenameSubmit(e, item);
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setRenamingId(null);
+                  }
+                }}
+                onBlur={() => {
+                  if (renamingName.trim() && renamingName.trim() !== item.name) {
+                    handleRenameSubmit(null, item);
+                  } else {
+                    setRenamingId(null);
+                  }
+                }}
                 autoFocus
               />
             </form>
@@ -1402,7 +1492,23 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                       placeholder={`New ${creatingType} name...`}
                       value={newEntryName}
                       onChange={(e) => setNewEntryName(e.target.value)}
-                      onBlur={() => setCreatingType(null)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleCreateEntry(e);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setCreatingType(null);
+                          setNewEntryName('');
+                        }
+                      }}
+                      onBlur={() => {
+                        if (newEntryName.trim()) {
+                          handleCreateEntry();
+                        } else {
+                          setCreatingType(null);
+                        }
+                      }}
                       autoFocus
                     />
                   </form>
@@ -1410,7 +1516,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
                 {renderTreeItems(null, 0)}
 
-                {fileTree.length <= 1 && !creatingType && (
+                {fileTree.filter((f) => f.id !== 'folder-root').length === 0 && !creatingType && (
                   <div className="tree-empty-prompt">
                     <p>Folder is empty.</p>
                     <p>Click <FilePlus size={13} style={{ display: 'inline', verticalAlign: 'middle' }} /> above to create a file.</p>

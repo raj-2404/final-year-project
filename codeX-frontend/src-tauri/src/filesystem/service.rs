@@ -27,6 +27,27 @@ const IGNORED_NAMES: &[&str] = &[
     "Thumbs.db",
 ];
 
+pub fn get_default_workspace_dir() -> String {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+
+    let path = Path::new(&home).join("CodeXProjects");
+    if !path.exists() {
+        let _ = fs::create_dir_all(&path);
+    }
+    path.to_string_lossy().to_string()
+}
+
+pub fn create_project_folder(project_name: &str, parent_path: Option<String>) -> Result<String, String> {
+    let parent = parent_path.unwrap_or_else(get_default_workspace_dir);
+    let target = Path::new(&parent).join(project_name);
+    if !target.exists() {
+        fs::create_dir_all(&target).map_err(|e| format!("Failed to create project directory: {}", e))?;
+    }
+    Ok(target.to_string_lossy().to_string())
+}
+
 pub fn pick_folder() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("Open Project Folder")

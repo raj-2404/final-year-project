@@ -12,6 +12,22 @@ export const filesystemService = {
     return isDesktopApp() || localFileSystem.isSupported();
   },
 
+  async getDefaultWorkspaceDir() {
+    if (isDesktopApp()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke('fs_get_default_workspace_dir');
+    }
+    return null;
+  },
+
+  async createProjectFolder(projectName, parentPath = null) {
+    if (isDesktopApp()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke('fs_create_project_folder', { projectName, parentPath: parentPath || null });
+    }
+    return null;
+  },
+
   async pickFolder() {
     if (isDesktopApp()) {
       const { invoke } = await import('@tauri-apps/api/core');

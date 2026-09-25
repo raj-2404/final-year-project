@@ -24,9 +24,12 @@ pub fn term_create(
     rows: Option<u16>,
 ) -> Result<TerminalSessionInfo, String> {
     let chosen_shell = shell.unwrap_or_else(platform::get_default_shell);
-    let chosen_cwd = cwd.unwrap_or_else(|| {
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    });
+    let chosen_cwd = match cwd {
+        Some(ref s) if !s.trim().is_empty() && std::path::Path::new(s).exists() => s.clone(),
+        _ => std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string()),
+    };
 
     term_state.create_session(
         app,

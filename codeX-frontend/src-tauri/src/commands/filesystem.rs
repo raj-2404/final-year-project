@@ -5,6 +5,16 @@ use std::path::Path;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
+pub fn fs_get_default_workspace_dir() -> String {
+    service::get_default_workspace_dir()
+}
+
+#[tauri::command]
+pub fn fs_create_project_folder(project_name: String, parent_path: Option<String>) -> Result<String, String> {
+    service::create_project_folder(&project_name, parent_path)
+}
+
+#[tauri::command]
 pub fn fs_pick_folder() -> Option<String> {
     service::pick_folder()
 }
