@@ -4,7 +4,7 @@
  * Never transmits Git credentials or repos across remote collaboration websockets.
  */
 
-import { isDesktopApp } from './platform';
+import { isDesktopApp } from './platform.js';
 
 export const gitService = {
   isSupported() {

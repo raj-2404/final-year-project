@@ -22,6 +22,11 @@ import { terminalApi } from '../../services/api';
 import { isDesktopApp } from '../../services/native/platform';
 import TerminalPanel from './terminal/TerminalPanel';
 import ProcessConsole from './ProcessConsole';
+import { buildManager } from '../../build/buildManager.js';
+import { runManager } from '../../build/runManager.js';
+import { BuildProcessState } from '../../build/buildTypes.js';
+import { testManager } from '../../testing/testManager.js';
+import { TestLifecycleState } from '../../testing/testTypes.js';
 
 export default function BottomPanel({
   isOpen,
@@ -30,6 +35,8 @@ export default function BottomPanel({
   onTabChange,
   room,
   user,
+  markers = [],
+  onNavigateToProblem,
 }) {
   const [currentTab, setCurrentTab] = useState(activeTab || 'terminal');
   const [isMaximized, setIsMaximized] = useState(false);
@@ -41,6 +48,13 @@ export default function BottomPanel({
   const [isRunning, setIsRunning] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [startedBy, setStartedBy] = useState('');
+  const [outputChannel, setOutputChannel] = useState('tasks');
+  const [outputLogs, setOutputLogs] = useState([]);
+  const [testLogs, setTestLogs] = useState([]);
+  const [activeTaskState, setActiveTaskState] = useState(BuildProcessState.IDLE);
+  const [activeTestState, setActiveTestState] = useState(TestLifecycleState.IDLE);
+  const [activeTaskName, setActiveTaskName] = useState('');
+  const outputContainerRef = useRef(null);
   const [hostUsername, setHostUsername] = useState('');
 
   const terminalContainerRef = useRef(null);
@@ -60,6 +74,75 @@ export default function BottomPanel({
       setCurrentTab(activeTab);
     }
   }, [activeTab]);
+
+  // Subscribe to Build & Run output and process state
+  useEffect(() => {
+    const unsubBuildOut = buildManager.onOutput((chunk, type) => {
+      setOutputLogs((prev) => [...prev, { text: chunk, type, time: Date.now() }]);
+      setOutputChannel('tasks');
+    });
+    const unsubBuildState = buildManager.onStateChange((state, proc) => {
+      setActiveTaskState(state);
+      if (proc) {
+        setActiveTaskName(`Build: ${proc.command} ${proc.args.join(' ')}`.trim());
+      }
+    });
+
+    const unsubRunOut = runManager.onOutput((chunk, type) => {
+      setOutputLogs((prev) => [...prev, { text: chunk, type, time: Date.now() }]);
+      setOutputChannel('tasks');
+    });
+    const unsubRunState = runManager.onStateChange((state, proc) => {
+      setActiveTaskState(state);
+      if (proc) {
+        setActiveTaskName(`Run: ${proc.command} ${proc.args.join(' ')}`.trim());
+      }
+    });
+
+    const unsubTestOut = testManager.onOutput((chunk, type) => {
+      setTestLogs((prev) => [...prev, { text: chunk, type, time: Date.now() }]);
+      setOutputChannel('tests');
+    });
+    const unsubTestState = testManager.onStateChange((state) => {
+      setActiveTestState(state);
+    });
+
+    return () => {
+      unsubBuildOut();
+      unsubBuildState();
+      unsubRunOut();
+      unsubRunState();
+      unsubTestOut();
+      unsubTestState();
+    };
+  }, []);
+
+  // Auto-scroll output container on new output
+  useEffect(() => {
+    if (outputContainerRef.current && currentTab === 'output') {
+      outputContainerRef.current.scrollTop = outputContainerRef.current.scrollHeight;
+    }
+  }, [outputLogs, testLogs, currentTab, outputChannel]);
+
+  const handleClearOutput = () => {
+    if (outputChannel === 'tests') {
+      setTestLogs([]);
+    } else {
+      setOutputLogs([]);
+    }
+  };
+
+  const handleStopActiveTask = async () => {
+    if (buildManager.isBuilding()) {
+      await buildManager.stopBuild();
+    }
+    if (runManager.isRunning()) {
+      await runManager.stopRun();
+    }
+    if (testManager.getState() === TestLifecycleState.RUNNING || testManager.getState() === TestLifecycleState.STOPPING) {
+      await testManager.stopTests();
+    }
+  };
 
   // Query backend state on mount or room change (Web only)
   const checkTerminalState = useCallback(async () => {
@@ -392,7 +475,24 @@ export default function BottomPanel({
           >
             <AlertCircle size={13} />
             <span>PROBLEMS</span>
-            <span className="panel-badge-zero">0</span>
+            <span
+              className={markers && markers.length > 0 ? 'panel-badge-count' : 'panel-badge-zero'}
+              style={
+                markers && markers.length > 0
+                  ? {
+                      backgroundColor: markers.some((m) => m.severity === 8) ? '#f87171' : '#facc15',
+                      color: '#1e1e1e',
+                      fontWeight: 700,
+                      borderRadius: '8px',
+                      padding: '0 5px',
+                      fontSize: '10px',
+                      marginLeft: '4px',
+                    }
+                  : {}
+              }
+            >
+              {markers?.length || 0}
+            </span>
           </button>
 
           <button
@@ -480,6 +580,65 @@ export default function BottomPanel({
                   <span className="live-dot" />
                   <span className="live-label">NOT RUNNING</span>
                 </div>
+              )}
+            </div>
+          )}
+
+          {currentTab === 'output' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginRight: '6px' }}>
+              <select
+                value={outputChannel}
+                onChange={(e) => setOutputChannel(e.target.value)}
+                style={{
+                  backgroundColor: '#252526',
+                  color: '#cccccc',
+                  border: '1px solid #3c3c3c',
+                  borderRadius: '3px',
+                  fontSize: '11px',
+                  padding: '2px 6px',
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="tasks">Tasks: Build &amp; Run</option>
+                <option value="tests">Tests: Test Output</option>
+                <option value="system">CodeX System / LiveSync</option>
+              </select>
+
+              {(outputChannel === 'tasks' || outputChannel === 'tests') && (
+                <>
+                  {((outputChannel === 'tasks' &&
+                    (activeTaskState === BuildProcessState.RUNNING ||
+                      activeTaskState === BuildProcessState.STARTING)) ||
+                    (outputChannel === 'tests' &&
+                      (activeTestState === TestLifecycleState.RUNNING ||
+                        activeTestState === TestLifecycleState.STOPPING))) && (
+                    <button
+                      type="button"
+                      className="btn-terminal-action danger"
+                      title="Stop Execution"
+                      onClick={handleStopActiveTask}
+                      style={{
+                        color: '#f87171',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        padding: '2px 6px',
+                      }}
+                    >
+                      <Square size={11} fill="currentColor" />
+                      <span style={{ fontSize: '10.5px' }}>Stop</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-terminal-action"
+                    title="Clear Output"
+                    onClick={handleClearOutput}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </>
               )}
             </div>
           )}
@@ -588,22 +747,217 @@ export default function BottomPanel({
         )}
 
         {currentTab === 'problems' && (
-          <div className="panel-empty-state">
-            <AlertCircle size={24} color="#858585" />
-            <span>No problems have been detected in the workspace.</span>
-          </div>
+          markers && markers.length > 0 ? (
+            <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', fontSize: '12px', fontFamily: 'monospace' }}>
+              {markers.map((marker, idx) => {
+                const isError = marker.severity === 8; // monaco.MarkerSeverity.Error = 8
+                const fileName = marker.resource ? marker.resource.path ? marker.resource.path.split('/').pop() : marker.resource.toString().split('/').pop() : 'file';
+                return (
+                  <div
+                    key={`${marker.resource}-${marker.startLineNumber}-${marker.startColumn}-${idx}`}
+                    onClick={() => onNavigateToProblem && onNavigateToProblem(marker)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '8px',
+                      padding: '4px 6px',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                      borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.04)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                  >
+                    <span style={{ color: isError ? '#f87171' : '#facc15', flexShrink: 0 }}>
+                      {isError ? '●' : '▲'}
+                    </span>
+                    <span style={{ flex: 1, color: '#e2e8f0', wordBreak: 'break-word' }}>
+                      {marker.message}
+                    </span>
+                    <span style={{ color: '#94a3b8', flexShrink: 0, fontSize: '11px' }}>
+                      {fileName} [{marker.startLineNumber}, {marker.startColumn}]
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="panel-empty-state">
+              <AlertCircle size={24} color="#858585" />
+              <span>No problems have been detected in the workspace.</span>
+            </div>
+          )
         )}
 
-        {currentTab === 'output' && (
-          <div className="panel-output-view">
-            <div>[LiveSync] Connected to collaborative room: {room?.roomCode}</div>
-            <div>[Storage] PostgreSQL synchronization active (debounced 1.5s)</div>
-            <div>[Terminal] {isDesktop ? 'Local PTY Engine Active (Isolated)' : 'Native ZSH session bridge ready'}</div>
-            <div>[Status] {isDesktop ? 'Native Desktop Terminal session' : (isRunning ? 'Terminal is RUNNING and shared with all members' : 'Terminal is STOPPED')}</div>
-            <div>[Protocol] STOMP v1.2 over SockJS WebSocket transport</div>
-            <div>[User] Active user: @{currentUsername}</div>
-          </div>
-        )}
+        {currentTab === 'output' &&
+          (outputChannel === 'tests' ? (
+            <div
+              ref={outputContainerRef}
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '8px 12px',
+                fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', monospace",
+                fontSize: '12px',
+                lineHeight: '1.5',
+                backgroundColor: '#181818',
+                color: '#cccccc',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  paddingBottom: '8px',
+                  marginBottom: '8px',
+                  borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                  fontSize: '11px',
+                  color: '#858585',
+                }}
+              >
+                <span
+                  style={{
+                    padding: '1px 6px',
+                    borderRadius: '3px',
+                    fontWeight: 600,
+                    backgroundColor:
+                      activeTestState === TestLifecycleState.RUNNING
+                        ? 'rgba(34, 197, 94, 0.2)'
+                        : activeTestState === TestLifecycleState.FAILED
+                        ? 'rgba(239, 68, 68, 0.2)'
+                        : activeTestState === TestLifecycleState.PASSED
+                        ? 'rgba(59, 130, 246, 0.2)'
+                        : 'rgba(255, 255, 255, 0.05)',
+                    color:
+                      activeTestState === TestLifecycleState.RUNNING
+                        ? '#4ade80'
+                        : activeTestState === TestLifecycleState.FAILED
+                        ? '#f87171'
+                        : activeTestState === TestLifecycleState.PASSED
+                        ? '#60a5fa'
+                        : '#858585',
+                  }}
+                >
+                  {activeTestState}
+                </span>
+                <span>Test Runner: {testManager.getActiveFramework() || 'Auto'}</span>
+              </div>
+
+              {testLogs.length === 0 ? (
+                <div style={{ color: '#6e7681', padding: '16px 0' }}>
+                  No test output yet. Run tests from the Test Explorer (Activity Bar Flask icon) or press ⇧⌘T (Ctrl+Shift+T) to execute tests.
+                </div>
+              ) : (
+                testLogs.map((entry, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      color:
+                        entry.type === 'stderr'
+                          ? '#f87171'
+                          : entry.type === 'system'
+                          ? '#38bdf8'
+                          : '#d4d4d4',
+                    }}
+                  >
+                    {entry.text}
+                  </span>
+                ))
+              )}
+            </div>
+          ) : outputChannel === 'tasks' ? (
+            <div
+              ref={outputContainerRef}
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '8px 12px',
+                fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', monospace",
+                fontSize: '12px',
+                lineHeight: '1.5',
+                backgroundColor: '#181818',
+                color: '#cccccc',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {activeTaskName && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    paddingBottom: '8px',
+                    marginBottom: '8px',
+                    borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                    fontSize: '11px',
+                    color: '#858585',
+                  }}
+                >
+                  <span
+                    style={{
+                      padding: '1px 6px',
+                      borderRadius: '3px',
+                      fontWeight: 600,
+                      backgroundColor:
+                        activeTaskState === BuildProcessState.RUNNING
+                          ? 'rgba(34, 197, 94, 0.2)'
+                          : activeTaskState === BuildProcessState.FAILED
+                          ? 'rgba(239, 68, 68, 0.2)'
+                          : activeTaskState === BuildProcessState.SUCCEEDED
+                          ? 'rgba(59, 130, 246, 0.2)'
+                          : 'rgba(255, 255, 255, 0.05)',
+                      color:
+                        activeTaskState === BuildProcessState.RUNNING
+                          ? '#4ade80'
+                          : activeTaskState === BuildProcessState.FAILED
+                          ? '#f87171'
+                          : activeTaskState === BuildProcessState.SUCCEEDED
+                          ? '#60a5fa'
+                          : '#858585',
+                    }}
+                  >
+                    {activeTaskState}
+                  </span>
+                  <span>{activeTaskName}</span>
+                </div>
+              )}
+
+              {outputLogs.length === 0 ? (
+                <div style={{ color: '#6e7681', padding: '16px 0' }}>
+                  No task output yet. Run a build task (⇧⌘B / Ctrl+Shift+B) or run without debugging (^F5 / Ctrl+F5) to view streaming compiler and process output.
+                </div>
+              ) : (
+                outputLogs.map((entry, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      color:
+                        entry.type === 'stderr'
+                          ? '#f87171'
+                          : entry.type === 'system'
+                          ? '#38bdf8'
+                          : '#d4d4d4',
+                    }}
+                  >
+                    {entry.text}
+                  </span>
+                ))
+              )}
+            </div>
+          ) : (
+            <div className="panel-output-view" style={{ padding: '8px 12px' }}>
+              <div>[LiveSync] Connected to collaborative room: {room?.roomCode}</div>
+              <div>[Storage] PostgreSQL synchronization active (debounced 1.5s)</div>
+              <div>[Terminal] {isDesktop ? 'Local PTY Engine Active (Isolated)' : 'Native ZSH session bridge ready'}</div>
+              <div>[Status] {isDesktop ? 'Native Desktop Terminal session' : (isRunning ? 'Terminal is RUNNING and shared with all members' : 'Terminal is STOPPED')}</div>
+              <div>[Protocol] STOMP v1.2 over SockJS WebSocket transport</div>
+              <div>[User] Active user: @{currentUsername}</div>
+            </div>
+          ))}
 
         {currentTab === 'debug' && (
           <ProcessConsole projectRoot={room?.diskPath || null} />

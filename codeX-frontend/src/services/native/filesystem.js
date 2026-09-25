@@ -4,8 +4,8 @@
  * while maintaining fallback to File System Access API on web.
  */
 
-import { isDesktopApp } from './platform';
-import { localFileSystem } from '../localFileSystem';
+import { isDesktopApp } from './platform.js';
+import { localFileSystem } from '../localFileSystem.js';
 
 export const filesystemService = {
   isSupported() {

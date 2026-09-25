@@ -4,7 +4,7 @@
  * Detects local listening ports automatically and isolates execution to the local machine.
  */
 
-import { isDesktopApp } from './platform';
+import { isDesktopApp } from './platform.js';
 
 class NativeProcessService {
   constructor() {

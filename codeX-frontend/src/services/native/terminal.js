@@ -4,7 +4,7 @@
  * Provides clean multi-session management, streaming I/O, and resizing.
  */
 
-import { isDesktopApp } from './platform';
+import { isDesktopApp } from './platform.js';
 
 class NativeTerminalService {
   constructor() {

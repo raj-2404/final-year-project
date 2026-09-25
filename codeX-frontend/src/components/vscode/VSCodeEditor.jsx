@@ -31,6 +31,14 @@ import {
   Eye,
   Save,
   Command,
+  Bug,
+  Pause,
+  ArrowRight,
+  ArrowDown,
+  ArrowUp,
+  Square,
+  Circle,
+  FlaskConical,
 } from 'lucide-react';
 
 import { roomsApi } from '../../services/api';
@@ -43,34 +51,24 @@ import CollabPopover from './CollabPopover';
 import BottomPanel from './BottomPanel';
 import SourceControlPanel from './SourceControlPanel';
 import RunDebugPanel from './RunDebugPanel';
+import TestExplorerPanel from './TestExplorerPanel';
 import CommandPaletteModal from './CommandPaletteModal';
 import TeamModal from '../team/TeamModal';
 import './VSCode.css';
-
-// Helper to determine Monaco language from file extension
-const getLanguageForFilename = (filename) => {
-  const ext = filename?.split('.').pop()?.toLowerCase();
-  switch (ext) {
-    case 'py': return 'python';
-    case 'js': case 'jsx': return 'javascript';
-    case 'ts': case 'tsx': return 'typescript';
-    case 'html': return 'html';
-    case 'css': case 'scss': return 'css';
-    case 'json': return 'json';
-    case 'java': return 'java';
-    case 'cpp': case 'cc': case 'cxx': return 'cpp';
-    case 'c': case 'h': return 'c';
-    case 'go': return 'go';
-    case 'md': return 'markdown';
-    case 'sql': return 'sql';
-    case 'sh': return 'shell';
-    case 'rs': return 'rust';
-    case 'xml': return 'xml';
-    case 'yaml': case 'yml': return 'yaml';
-    case 'toml': return 'toml';
-    default: return 'plaintext';
-  }
-};
+import {
+  getLanguageForFilename,
+  getLanguageLabel,
+  themeManager,
+  CODEX_DARK_THEME_NAME,
+  getEditorOptions,
+  languageService,
+  modelManager,
+  languageProviderRegistry,
+} from '../../editor';
+import { debuggerManager, breakpointManager } from '../../debugger';
+import DebugToolbar from './DebugToolbar';
+import { buildManager, runManager } from '../../build';
+import { testManager } from '../../testing';
 
 export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   const isDesktop = isDesktopApp();
@@ -102,7 +100,9 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   // Editor cursor & language state
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
-  const [editorTheme, setEditorTheme] = useState('vs-dark');
+  const [editorTheme, setEditorTheme] = useState(CODEX_DARK_THEME_NAME);
+  const [diagnosticsCount, setDiagnosticsCount] = useState({ errors: 0, warnings: 0 });
+  const [diagnosticsMarkers, setDiagnosticsMarkers] = useState([]);
 
   // Collaboration & Live Sync
   const [participantsCount, setParticipantsCount] = useState(1);
@@ -153,6 +153,8 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   const saveTimerRef = useRef(null);
   const editorRef = useRef(null);
+  const monacoRef = useRef(null);
+  const handleSelectFileRef = useRef(null);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -175,6 +177,27 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       setGitStatus(st);
     } catch {}
   }, [isDesktop, room.diskPath]);
+
+  // Debugger Toolbar & Execution State
+  const [debugToolbarState, setDebugToolbarState] = useState({
+    isDebugging: false,
+    sessionState: 'stopped',
+    activeFrame: null,
+  });
+
+  useEffect(() => {
+    const unsub = debuggerManager.onStateChange((state) => {
+      setDebugToolbarState({
+        isDebugging: state.isDebugging,
+        sessionState: state.sessionState,
+        activeFrame: state.activeFrame,
+      });
+    });
+    return () => {
+      unsub();
+      debuggerManager.dispose();
+    };
+  }, []);
 
   // 1. Initial Load & Workspace Initialization
   useEffect(() => {
@@ -392,10 +415,72 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   }, [room.diskPath, isDesktop, refreshGitStatus]);
 
   const activeFile = fileTree.find((item) => item.id === activeFileId && item.type === 'file');
+  const activeFileLanguage = activeFile
+    ? (activeFile.language && activeFile.language !== 'plaintext'
+        ? activeFile.language
+        : getLanguageForFilename(activeFile.name || activeFile.path || ''))
+    : 'plaintext';
 
-  // Monaco Editor Mounting & Cursor Tracking
-  const handleEditorDidMount = (editor) => {
+  const workspaceRoot = room.diskPath || room.roomCode || 'workspace';
+  const activeFileUri = activeFile
+    ? modelManager.getCanonicalUriString(activeFile.path || activeFile.name, workspaceRoot)
+    : undefined;
+
+  // Monaco Editor Theme & Language Intelligence Setup
+  const handleBeforeMount = (monaco) => {
+    monacoRef.current = monaco;
+    // Define and register CodeX themes
+    themeManager.defineThemes(monaco);
+
+    // Initialize Level 2 Language Intelligence & Level 3B Debugger services
+    languageService.initialize(monaco, { workspaceRoot });
+    languageProviderRegistry.registerAll(monaco);
+    debuggerManager.initialize(monaco, { workspaceRoot, fileTree, onNavigate: handleNavigateToFile });
+  };
+
+  // Cross-file navigation handler (Go to Definition across workspace files)
+  const handleNavigateToFile = useCallback((targetFile, selectionOrPosition) => {
+    if (handleSelectFileRef.current) {
+      handleSelectFileRef.current(targetFile);
+    }
+    if (selectionOrPosition) {
+      setTimeout(() => {
+        if (editorRef.current) {
+          const pos = selectionOrPosition.startLineNumber !== undefined
+            ? { lineNumber: selectionOrPosition.startLineNumber, column: selectionOrPosition.startColumn }
+            : selectionOrPosition;
+          editorRef.current.setPosition(pos);
+          editorRef.current.revealPositionInCenter(pos);
+        }
+      }, 80);
+    }
+  }, []);
+
+  // Monaco Editor Mounting, Language Service Wiring & Cursor Tracking
+  const handleEditorDidMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
+
+    if (monaco) {
+      themeManager.applyTheme(monaco, editorTheme);
+      languageService.setupEditor(editor, monaco, {
+        fileTree,
+        workspaceRoot,
+        onNavigate: handleNavigateToFile,
+        onDiagnosticsChange: ({ errors, warnings, markers }) => {
+          setDiagnosticsCount({ errors, warnings });
+          if (markers) setDiagnosticsMarkers(markers);
+        },
+      });
+
+      // Attach Debugger Manager for gutter breakpoints and execution highlighting
+      debuggerManager.attachEditor(editor, monaco, activeFile, {
+        fileTree,
+        workspaceRoot,
+        onNavigate: handleNavigateToFile,
+      });
+    }
+
     editor.onDidChangeCursorPosition((e) => {
       setCursorPos({
         line: e.position.lineNumber,
@@ -404,12 +489,139 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     });
   };
 
+  // Update debugger active file & breakpoints when active tab changes
+  useEffect(() => {
+    if (editorRef.current && monacoRef.current) {
+      debuggerManager.attachEditor(editorRef.current, monacoRef.current, activeFile, {
+        fileTree,
+        workspaceRoot,
+        onNavigate: handleNavigateToFile,
+      });
+    }
+  }, [activeFile, fileTree, workspaceRoot, handleNavigateToFile]);
+
+  // Synchronize workspace files into Monaco models so cross-file imports can be resolved
+  useEffect(() => {
+    if (monacoRef.current && fileTree.length > 0) {
+      const root = room.diskPath || room.roomCode || 'workspace';
+      languageService.updateContext(fileTree, root);
+      modelManager.syncWorkspaceFiles(monacoRef.current, fileTree, root);
+    }
+  }, [fileTree, room.diskPath, room.roomCode]);
+
+  // Synchronize build problem markers into Monaco models & Problems panel
+  useEffect(() => {
+    const unsubProblems = buildManager.onProblemsChange((problems) => {
+      if (!monacoRef.current) return;
+      const monaco = monacoRef.current;
+
+      const buildMarkers = problems.map((prob) => {
+        const fullPath = prob.file.startsWith('/') || prob.file.includes(':\\')
+          ? prob.file
+          : `${workspaceRoot}/${prob.file}`.replace(/\/+/g, '/');
+
+        const uri = monaco.Uri.file(fullPath);
+        return {
+          resource: uri,
+          startLineNumber: prob.line || 1,
+          startColumn: prob.column || 1,
+          endLineNumber: prob.line || 1,
+          endColumn: (prob.column || 1) + 20,
+          message: `[${prob.source}] ${prob.message}`,
+          severity: prob.severity === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
+          source: prob.source || 'build',
+        };
+      });
+
+      // Update Monaco markers for each model
+      const models = monaco.editor.getModels();
+      models.forEach((model) => {
+        const modelUri = model.uri.toString();
+        const fileBuildMarkers = buildMarkers.filter((m) => m.resource.toString() === modelUri);
+        monaco.editor.setModelMarkers(model, 'build', fileBuildMarkers);
+      });
+
+      // Merge build markers into diagnosticsMarkers for Problems panel
+      setDiagnosticsMarkers((prev) => {
+        const nonBuild = prev.filter(
+          (m) =>
+            m.source !== 'build' &&
+            !m.source?.startsWith('tsc') &&
+            !m.source?.startsWith('gcc') &&
+            !m.source?.startsWith('cargo') &&
+            !m.source?.startsWith('go') &&
+            !m.source?.startsWith('python')
+        );
+        return [...nonBuild, ...buildMarkers];
+      });
+
+      const errCount = buildMarkers.filter((m) => m.severity === monaco.MarkerSeverity.Error).length;
+      const warnCount = buildMarkers.filter((m) => m.severity === monaco.MarkerSeverity.Warning).length;
+      setDiagnosticsCount((prev) => ({
+        errors: prev.errors + errCount,
+        warnings: prev.warnings + warnCount,
+      }));
+    });
+
+    return () => unsubProblems();
+  }, [workspaceRoot]);
+
+  // Synchronize test problem markers into Monaco models & Problems panel
+  useEffect(() => {
+    const unsubProblems = testManager.onProblemsChange((problems) => {
+      if (!monacoRef.current) return;
+      const monaco = monacoRef.current;
+
+      const testMarkers = problems.map((prob) => {
+        const fullPath = prob.file.startsWith('/') || prob.file.includes(':\\')
+          ? prob.file
+          : `${workspaceRoot}/${prob.file}`.replace(/\/+/g, '/');
+
+        const uri = monaco.Uri.file(fullPath);
+        return {
+          resource: uri,
+          startLineNumber: prob.line || 1,
+          startColumn: prob.column || 1,
+          endLineNumber: prob.line || 1,
+          endColumn: (prob.column || 1) + 20,
+          message: `[test] ${prob.message}`,
+          severity: monaco.MarkerSeverity.Error,
+          source: 'test',
+        };
+      });
+
+      // Update Monaco markers for each model
+      const models = monaco.editor.getModels();
+      models.forEach((model) => {
+        const modelUri = model.uri.toString();
+        const fileTestMarkers = testMarkers.filter((m) => m.resource.toString() === modelUri);
+        monaco.editor.setModelMarkers(model, 'test', fileTestMarkers);
+      });
+
+      // Merge test markers into diagnosticsMarkers
+      setDiagnosticsMarkers((prev) => {
+        const nonTest = prev.filter((m) => m.source !== 'test');
+        return [...nonTest, ...testMarkers];
+      });
+
+      setDiagnosticsCount((prev) => ({
+        errors: prev.errors + testMarkers.length,
+        warnings: prev.warnings,
+      }));
+    });
+
+    return () => unsubProblems();
+  }, [workspaceRoot]);
+
   // Local Code Editing in Monaco
   const handleEditorChange = (newCode) => {
     if (!activeFile) return;
 
     // Mark file as dirty
     setDirtyFileIds((prev) => new Set([...prev, activeFile.id]));
+
+    // Notify Language Service / LSP of in-memory change
+    languageService.handleFileChange(activeFile, newCode);
 
     const updatedTree = fileTree.map((item) =>
       item.id === activeFile.id ? { ...item, content: newCode } : item
@@ -473,6 +685,9 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       });
       showToast(`Saved ${activeFile.name}`);
     }
+
+    // Notify Language Service / LSP of document save
+    languageService.handleFileSave(activeFile);
   };
 
   // Save As (Cmd/Ctrl + Shift + S)
@@ -702,6 +917,9 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       setOpenTabIds([...openTabIds, file.id]);
     }
 
+    // Notify Language Service / LSP of document open
+    languageService.handleFileOpen(file);
+
     if (isDesktop && file.path && (file.content === undefined || file.content === null)) {
       try {
         const text = await filesystemService.readFile(file.path);
@@ -713,10 +931,16 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       }
     }
   };
+  handleSelectFileRef.current = handleSelectFile;
 
   // Closing a Tab with dirty state check
   const handleCloseTab = async (e, tabId) => {
     e.stopPropagation();
+
+    const closingFile = fileTree.find((f) => f.id === tabId);
+    if (closingFile) {
+      languageService.handleFileClose(closingFile);
+    }
 
     if (dirtyFileIds.has(tabId)) {
       const file = fileTree.find((f) => f.id === tabId);
@@ -785,7 +1009,110 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     }
   };
 
-  // Keyboard Shortcuts (Cmd/Ctrl + S, P, Shift+P, B, `, W)
+  const handleStartBuild = async () => {
+    if (!isDesktop) {
+      showToast('Build operations are only available on the desktop app.');
+      return;
+    }
+    try {
+      setShowBottomPanel(true);
+      setBottomPanelTab('output');
+      showToast('Starting project build task...');
+      await buildManager.startBuild({
+        workspaceRoot: room?.diskPath || '',
+        fileTree,
+      });
+    } catch (err) {
+      showToast(`Build error: ${err.message || err}`);
+    }
+  };
+
+  const handleStartRun = async () => {
+    if (!isDesktop) {
+      showToast('Run operations are only available on the desktop app.');
+      return;
+    }
+    try {
+      setShowBottomPanel(true);
+      setBottomPanelTab('output');
+      showToast('Running project without debugging...');
+      await runManager.startRun({
+        workspaceRoot: room?.diskPath || '',
+        fileTree,
+      });
+    } catch (err) {
+      showToast(`Run error: ${err.message || err}`);
+    }
+  };
+
+  const handleStartRunFile = async () => {
+    if (!isDesktop) {
+      showToast('Run operations are only available on the desktop app.');
+      return;
+    }
+    if (!activeFile) {
+      showToast('Please open a file to run.');
+      return;
+    }
+    try {
+      setShowBottomPanel(true);
+      setBottomPanelTab('output');
+      showToast(`Running ${activeFile.name}...`);
+      await runManager.startRunFile({
+        workspaceRoot: room?.diskPath || '',
+        fileTree,
+        activeFile,
+      });
+    } catch (err) {
+      showToast(`Run file error: ${err.message || err}`);
+    }
+  };
+
+  const handleStopBuildOrRun = async () => {
+    if (buildManager.isBuilding()) {
+      await buildManager.stopBuild();
+      showToast('Stopping build task...');
+    }
+    if (runManager.isRunning()) {
+      await runManager.stopRun();
+      showToast('Stopping run task...');
+    }
+  };
+
+  const handleRunAllTests = async () => {
+    if (!isDesktop) {
+      showToast('Test execution requires CodeX Desktop.');
+      return;
+    }
+    try {
+      setShowBottomPanel(true);
+      setBottomPanelTab('output');
+      showToast('Running all tests...');
+      await testManager.runAllTests();
+    } catch (err) {
+      showToast(`Test error: ${err.message || err}`);
+    }
+  };
+
+  const handleStopTests = async () => {
+    try {
+      showToast('Stopping tests...');
+      await testManager.stopTests();
+    } catch (err) {
+      showToast(`Stop error: ${err.message || err}`);
+    }
+  };
+
+  const handleRefreshTests = async () => {
+    try {
+      showToast('Discovering tests...');
+      await testManager.discoverTests({ workspaceRoot, fileTree });
+    } catch (err) {
+      showToast(`Refresh error: ${err.message || err}`);
+    }
+  };
+
+  // Keyboard Shortcuts (Cmd/Ctrl + S, P, Shift+P, B, `, W, F5, Shift+B, Shift+T)
   useEffect(() => {
     const handleGlobalKeyDown = (e) => {
       const isCtrlOrMeta = e.metaKey || e.ctrlKey;
@@ -818,8 +1145,22 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         return;
       }
 
+      // Cmd+Shift+B: Run Build Task
+      if (isCtrlOrMeta && e.shiftKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        handleStartBuild();
+        return;
+      }
+
+      // Cmd+Shift+T: Run All Tests
+      if (isCtrlOrMeta && e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        handleRunAllTests();
+        return;
+      }
+
       // Cmd+B: Toggle Sidebar
-      if (isCtrlOrMeta && e.key.toLowerCase() === 'b') {
+      if (isCtrlOrMeta && !e.shiftKey && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         setActiveActivity((prev) => (prev ? null : 'explorer'));
         return;
@@ -837,6 +1178,65 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         if (activeFileIdRef.current) {
           e.preventDefault();
           handleCloseTab(e, activeFileIdRef.current);
+        }
+        return;
+      }
+
+      // F5 / Shift+F5 / Ctrl+Shift+F5 / Ctrl+F5: Debugging & Run Without Debugging
+      if (e.key === 'F5') {
+        e.preventDefault();
+        if (isCtrlOrMeta && !e.shiftKey) {
+          // Ctrl/Cmd + F5: Run Without Debugging
+          handleStartRun();
+          return;
+        }
+        if (e.shiftKey && isCtrlOrMeta) {
+          debuggerManager.restart();
+        } else if (e.shiftKey) {
+          debuggerManager.stop();
+        } else {
+          const session = debuggerManager.getActiveSession();
+          if (session && session.state === 'paused') {
+            debuggerManager.continue();
+          } else if (!session || session.state === 'stopped') {
+            debuggerManager.startDebugging({}, activeFile).catch((err) => {
+              showToast(`Debug error: ${err.message || err}`);
+            });
+          }
+        }
+        return;
+      }
+
+      // F6: Pause Debugging
+      if (e.key === 'F6') {
+        e.preventDefault();
+        debuggerManager.pause();
+        return;
+      }
+
+      // F9: Toggle Breakpoint on current line
+      if (e.key === 'F9') {
+        e.preventDefault();
+        if (activeFileUri) {
+          breakpointManager.toggleBreakpoint(activeFileUri, cursorPos.line);
+        }
+        return;
+      }
+
+      // F10: Step Over
+      if (e.key === 'F10') {
+        e.preventDefault();
+        debuggerManager.stepOver();
+        return;
+      }
+
+      // F11 / Shift+F11: Step Into / Step Out
+      if (e.key === 'F11') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          debuggerManager.stepOut();
+        } else {
+          debuggerManager.stepInto();
         }
         return;
       }
@@ -950,8 +1350,167 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     {
       id: 'workbench.switchTheme',
       label: 'Preferences: Toggle Dark / Light Theme',
-      icon: editorTheme === 'vs-dark' ? <Sun size={13} color="#f59e0b" /> : <Moon size={13} color="#60a5fa" />,
-      action: () => setEditorTheme((prev) => (prev === 'vs-dark' ? 'light' : 'vs-dark')),
+      icon: editorTheme === CODEX_DARK_THEME_NAME ? <Sun size={13} color="#f59e0b" /> : <Moon size={13} color="#60a5fa" />,
+      action: () => setEditorTheme((prev) => (prev === CODEX_DARK_THEME_NAME ? 'light' : CODEX_DARK_THEME_NAME)),
+    },
+    {
+      id: 'editor.formatDocument',
+      label: 'Format Document',
+      shortcut: '⇧⌥F',
+      action: () => languageService.formatDocument(editorRef.current),
+    },
+    {
+      id: 'editor.formatSelection',
+      label: 'Format Selection',
+      shortcut: '⌘K ⌘F',
+      action: () => languageService.formatSelection(editorRef.current),
+    },
+    {
+      id: 'editor.goToDefinition',
+      label: 'Go to Definition',
+      shortcut: 'F12',
+      action: () => languageService.triggerGoToDefinition(editorRef.current),
+    },
+    {
+      id: 'editor.findReferences',
+      label: 'Find All References',
+      shortcut: '⇧F12',
+      action: () => languageService.triggerFindReferences(editorRef.current),
+    },
+    {
+      id: 'editor.renameSymbol',
+      label: 'Rename Symbol',
+      shortcut: 'F2',
+      action: () => languageService.triggerRename(editorRef.current),
+    },
+    // Debugger commands
+    {
+      id: 'debug.start',
+      label: 'Debug: Start Debugging / Continue',
+      shortcut: 'F5',
+      icon: <Bug size={13} color="#4ade80" />,
+      action: () => {
+        const session = debuggerManager.getActiveSession();
+        if (session && session.state === 'paused') {
+          debuggerManager.continue();
+        } else {
+          debuggerManager.startDebugging({}, activeFile).catch((err) => {
+            showToast(`Debug error: ${err.message || err}`);
+          });
+        }
+      },
+    },
+    {
+      id: 'debug.pause',
+      label: 'Debug: Pause',
+      shortcut: 'F6',
+      icon: <Pause size={13} color="#facc15" />,
+      action: () => debuggerManager.pause(),
+    },
+    {
+      id: 'debug.stepOver',
+      label: 'Debug: Step Over',
+      shortcut: 'F10',
+      icon: <ArrowRight size={13} color="#60a5fa" />,
+      action: () => debuggerManager.stepOver(),
+    },
+    {
+      id: 'debug.stepInto',
+      label: 'Debug: Step Into',
+      shortcut: 'F11',
+      icon: <ArrowDown size={13} color="#60a5fa" />,
+      action: () => debuggerManager.stepInto(),
+    },
+    {
+      id: 'debug.stepOut',
+      label: 'Debug: Step Out',
+      shortcut: '⇧F11',
+      icon: <ArrowUp size={13} color="#60a5fa" />,
+      action: () => debuggerManager.stepOut(),
+    },
+    {
+      id: 'debug.restart',
+      label: 'Debug: Restart Debugging',
+      shortcut: '⌃⇧F5',
+      icon: <RotateCw size={13} color="#38bdf8" />,
+      action: () => debuggerManager.restart(),
+    },
+    {
+      id: 'debug.stop',
+      label: 'Debug: Stop Debugging',
+      shortcut: '⇧F5',
+      icon: <Square size={13} color="#ef4444" />,
+      action: () => debuggerManager.stop(),
+    },
+    {
+      id: 'debug.toggleBreakpoint',
+      label: 'Debug: Toggle Breakpoint',
+      shortcut: 'F9',
+      icon: <Circle size={13} color="#e51400" />,
+      action: () => {
+        if (activeFileUri) {
+          breakpointManager.toggleBreakpoint(activeFileUri, cursorPos.line);
+        }
+      },
+    },
+    {
+      id: 'debug.removeAllBreakpoints',
+      label: 'Debug: Remove All Breakpoints',
+      icon: <Trash2 size={13} color="#f87171" />,
+      action: () => breakpointManager.removeAllBreakpoints(),
+    },
+    // Level 3C — Build & Run Commands
+    {
+      id: 'workbench.action.tasks.build',
+      label: 'Tasks: Run Build Task (Build Project)',
+      shortcut: '⇧⌘B',
+      icon: <RotateCw size={13} color="#60a5fa" />,
+      action: handleStartBuild,
+    },
+    {
+      id: 'workbench.action.debug.run',
+      label: 'Debug: Run Without Debugging',
+      shortcut: '⌃F5',
+      icon: <Play size={13} color="#4ade80" />,
+      action: handleStartRun,
+    },
+    {
+      id: 'workbench.action.debug.runFile',
+      label: 'Debug: Run Current Active File',
+      icon: <Play size={13} color="#38bdf8" />,
+      action: handleStartRunFile,
+    },
+    {
+      id: 'workbench.action.tasks.stop',
+      label: 'Tasks: Stop Active Build / Run Task',
+      icon: <Square size={13} color="#f87171" />,
+      action: handleStopBuildOrRun,
+    },
+    // Level 3D — Test Runner Commands
+    {
+      id: 'testing.runAll',
+      label: 'Test: Run All Tests',
+      shortcut: '⇧⌘T',
+      icon: <FlaskConical size={13} color="#a855f7" />,
+      action: handleRunAllTests,
+    },
+    {
+      id: 'testing.refresh',
+      label: 'Test: Refresh / Discover Tests',
+      icon: <RotateCw size={13} color="#60a5fa" />,
+      action: handleRefreshTests,
+    },
+    {
+      id: 'testing.stop',
+      label: 'Test: Stop Tests',
+      icon: <Square size={13} color="#f87171" />,
+      action: handleStopTests,
+    },
+    {
+      id: 'testing.openExplorer',
+      label: 'View: Show Test Explorer',
+      icon: <FlaskConical size={13} color="#38bdf8" />,
+      action: () => setActiveActivity('test'),
     },
   ];
 
@@ -1392,6 +1951,13 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               <Play size={19} />
             </button>
             <button
+              className={`activity-btn ${activeActivity === 'test' ? 'active' : ''}`}
+              title={activeActivity === 'test' ? 'Close Testing' : 'Testing (Tests)'}
+              onClick={() => setActiveActivity((prev) => (prev === 'test' ? null : 'test'))}
+            >
+              <FlaskConical size={19} />
+            </button>
+            <button
               className={`activity-btn ${activeActivity === 'extensions' ? 'active' : ''}`}
               title={activeActivity === 'extensions' ? 'Close Extensions' : 'Extensions'}
               onClick={() => setActiveActivity((prev) => (prev === 'extensions' ? null : 'extensions'))}
@@ -1410,10 +1976,10 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             </button>
             <button
               className="activity-btn"
-              title={editorTheme === 'vs-dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
-              onClick={() => setEditorTheme(editorTheme === 'vs-dark' ? 'light' : 'vs-dark')}
+              title={editorTheme === CODEX_DARK_THEME_NAME ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
+              onClick={() => setEditorTheme(editorTheme === CODEX_DARK_THEME_NAME ? 'light' : CODEX_DARK_THEME_NAME)}
             >
-              {editorTheme === 'vs-dark' ? <Sun size={18} /> : <Moon size={18} />}
+              {editorTheme === CODEX_DARK_THEME_NAME ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <button
               className="activity-btn"
@@ -1544,6 +2110,22 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         {activeActivity === 'debug' && (
           <RunDebugPanel
             projectRoot={room.diskPath || null}
+            activeFile={activeFile}
+            fileTree={fileTree}
+            onNavigateToFile={handleNavigateToFile}
+            onOpenBottomTab={(tab) => {
+              setShowBottomPanel(true);
+              setBottomPanelTab(tab);
+            }}
+            showToast={showToast}
+          />
+        )}
+
+        {activeActivity === 'test' && (
+          <TestExplorerPanel
+            workspaceRoot={room.diskPath || null}
+            fileTree={fileTree}
+            onNavigateToFile={handleNavigateToFile}
             onOpenBottomTab={(tab) => {
               setShowBottomPanel(true);
               setBottomPanelTab(tab);
@@ -1615,6 +2197,11 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
           {/* Monaco Editor Pane or Diff Editor */}
           <div className="monaco-wrapper">
+            <DebugToolbar
+              isDebugging={debugToolbarState.isDebugging}
+              sessionState={debugToolbarState.sessionState}
+              activeFrame={debugToolbarState.activeFrame}
+            />
             {diffFile ? (
               <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%' }}>
                 <div
@@ -1653,15 +2240,15 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
                   <DiffEditor
                     height="100%"
                     theme={editorTheme}
-                    language={diffFile.language || 'plaintext'}
+                    language={getLanguageForFilename(diffFile.path)}
                     original={diffFile.original}
                     modified={diffFile.modified}
-                    options={{
+                    beforeMount={handleBeforeMount}
+                    options={getEditorOptions({
                       readOnly: true,
-                      automaticLayout: true,
                       minimap: { enabled: false },
                       renderSideBySide: true,
-                    }}
+                    })}
                   />
                 </div>
               </div>
@@ -1669,30 +2256,13 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               <Editor
                 height="100%"
                 theme={editorTheme}
-                language={activeFile.language || 'plaintext'}
+                path={activeFileUri}
+                language={activeFileLanguage}
                 value={activeFile.content || ''}
+                beforeMount={handleBeforeMount}
                 onMount={handleEditorDidMount}
                 onChange={handleEditorChange}
-                options={{
-                  fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, 'Courier New', monospace",
-                  fontSize: 13.5,
-                  lineHeight: 22,
-                  minimap: {
-                    enabled: true,
-                    maxColumn: 80,
-                    renderCharacters: false,
-                    scale: 1,
-                  },
-                  scrollBeyondLastLine: false,
-                  smoothScrolling: true,
-                  automaticLayout: true,
-                  tabSize: 2,
-                  wordWrap: 'on',
-                  bracketPairColorization: { enabled: true },
-                  cursorBlinking: 'smooth',
-                  renderLineHighlight: 'all',
-                  padding: { top: 8, bottom: 8 },
-                }}
+                options={getEditorOptions()}
               />
             ) : (
               <div className="editor-empty-state">
@@ -1721,6 +2291,22 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             onTabChange={(tab) => setBottomPanelTab(tab)}
             room={room}
             user={user}
+            markers={diagnosticsMarkers}
+            onNavigateToProblem={(marker) => {
+              if (marker?.resource) {
+                const targetFile = modelManager.findFileByUri(
+                  fileTree,
+                  marker.resource,
+                  room.diskPath || room.roomCode || 'workspace'
+                );
+                if (targetFile) {
+                  handleNavigateToFile(targetFile, {
+                    lineNumber: marker.startLineNumber,
+                    column: marker.startColumn,
+                  });
+                }
+              }
+            }}
           />
         </div>
       </div>
@@ -1740,9 +2326,21 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             {gitStatus?.behind > 0 && <span style={{ marginLeft: '3px', color: '#f87171' }}>↓{gitStatus.behind}</span>}
           </div>
 
-          <div className="status-item" title="0 Errors, 0 Warnings">
-            <span>0</span>
-            <span style={{ opacity: 0.6 }}>0</span>
+          <div
+            className="status-item"
+            title={`${diagnosticsCount.errors} Errors, ${diagnosticsCount.warnings} Warnings`}
+            onClick={() => {
+              setShowBottomPanel(true);
+              setBottomPanelTab('problems');
+            }}
+            style={{ cursor: 'pointer' }}
+          >
+            <span style={{ color: diagnosticsCount.errors > 0 ? '#f87171' : 'inherit', fontWeight: diagnosticsCount.errors > 0 ? '600' : 'normal' }}>
+              {diagnosticsCount.errors}
+            </span>
+            <span style={{ opacity: 0.6, marginLeft: '4px', color: diagnosticsCount.warnings > 0 ? '#facc15' : 'inherit' }}>
+              {diagnosticsCount.warnings}
+            </span>
           </div>
 
           <div className="status-item" title="Collaboration / Session Status">
@@ -1791,7 +2389,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
           {activeFile && (
             <div className="status-item language-tag" title="File Language Mode">
-              <span>{activeFile.language || 'plaintext'}</span>
+              <span>{getLanguageLabel(activeFileLanguage, activeFile.name)}</span>
             </div>
           )}
 

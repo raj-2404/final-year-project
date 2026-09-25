@@ -3,7 +3,7 @@
  * Reads and persists `.codex/project.json` for custom build & run actions.
  */
 
-import { isDesktopApp } from './platform';
+import { isDesktopApp } from './platform.js';
 
 export const projectService = {
   isSupported() {

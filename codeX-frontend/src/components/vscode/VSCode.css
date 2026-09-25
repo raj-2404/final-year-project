@@ -1686,3 +1686,148 @@
 .vscode-btn-secondary:hover {
   background: #3f3f3f;
 }
+
+/* ============================================================ */
+/* LEVEL 3B — DEBUGGER STYLES */
+/* ============================================================ */
+
+/* Breakpoint Glyphs in Monaco Gutter */
+.codex-breakpoint-glyph {
+  background: #e51400 !important;
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  margin-left: 6px !important;
+  margin-top: 6px !important;
+  cursor: pointer;
+  box-shadow: 0 0 4px rgba(229, 20, 0, 0.6);
+  transition: transform 0.1s ease;
+}
+
+.codex-breakpoint-glyph:hover {
+  transform: scale(1.2);
+}
+
+.codex-breakpoint-glyph.unverified {
+  background: transparent !important;
+  border: 2px solid #858585 !important;
+  box-shadow: none;
+}
+
+.codex-breakpoint-glyph.disabled {
+  background: transparent !important;
+  border: 2px solid #e51400 !important;
+  box-shadow: none;
+}
+
+/* Current Execution Line Highlight and Yellow Arrow Glyph */
+.codex-debug-active-line {
+  background: rgba(255, 215, 0, 0.16) !important;
+  border-top: 1px solid rgba(255, 215, 0, 0.35);
+  border-bottom: 1px solid rgba(255, 215, 0, 0.35);
+}
+
+.codex-debug-active-glyph {
+  width: 0 !important;
+  height: 0 !important;
+  border-top: 5px solid transparent !important;
+  border-bottom: 5px solid transparent !important;
+  border-left: 9px solid #eab308 !important;
+  margin-left: 6px !important;
+  margin-top: 6px !important;
+  filter: drop-shadow(0 0 3px rgba(234, 179, 8, 0.7));
+}
+
+/* Floating Debug Action Toolbar */
+.codex-debug-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: #252526;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 4px 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  z-index: 500;
+  animation: fadeInDown 0.15s ease-out;
+}
+
+.codex-debug-toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #cccccc;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.codex-debug-toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.codex-debug-toolbar-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.codex-debug-toolbar-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #eab308;
+  font-family: var(--font-mono);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  margin-right: 4px;
+}
+
+/* Variables Tree & Inspection */
+.codex-var-row {
+  display: flex;
+  align-items: flex-start;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  user-select: text;
+}
+
+.codex-var-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.codex-var-key {
+  color: #9cdcfe;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+
+.codex-var-val {
+  color: #ce9178;
+  word-break: break-all;
+}
+
+.codex-var-val.number {
+  color: #b5cea8;
+}
+
+.codex-var-val.boolean {
+  color: #569cd6;
+}
+
+.codex-var-val.object {
+  color: #4ec9b0;
+}
+

@@ -1,13 +1,21 @@
+pub mod build;
 pub mod commands;
+pub mod debugger;
 pub mod filesystem;
 pub mod git;
+pub mod lsp;
 pub mod platform;
 pub mod process;
 pub mod terminal;
+pub mod testing;
 
+use build::BuildManager;
+use debugger::DebuggerManager;
 use filesystem::FileWatcher;
+use lsp::LspManager;
 use process::ProcessManager;
 use terminal::TerminalManager;
+use testing::TestManager;
 
 #[tauri::command]
 fn get_desktop_info() -> serde_json::Value {
@@ -23,16 +31,28 @@ pub fn run() {
     let terminal_manager = TerminalManager::new();
     let file_watcher = FileWatcher::new();
     let process_manager = ProcessManager::new();
+    let lsp_manager = LspManager::new();
+    let debugger_manager = DebuggerManager::new();
+    let build_manager = BuildManager::new();
+    let test_manager = TestManager::new();
 
     let term_mgr_exit = terminal_manager.clone();
     let proc_mgr_exit = process_manager.clone();
     let watcher_exit = file_watcher.clone();
+    let lsp_mgr_exit = lsp_manager.clone();
+    let debug_mgr_exit = debugger_manager.clone();
+    let build_mgr_exit = build_manager.clone();
+    let test_mgr_exit = test_manager.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
         .manage(terminal_manager)
         .manage(file_watcher)
         .manage(process_manager)
+        .manage(lsp_manager)
+        .manage(debugger_manager)
+        .manage(build_manager)
+        .manage(test_manager)
         .invoke_handler(tauri::generate_handler![
             get_desktop_info,
             // Filesystem commands
@@ -81,6 +101,28 @@ pub fn run() {
             // Project commands
             commands::project::project_load_config,
             commands::project::project_save_config,
+            // Language Server Protocol (LSP) commands
+            commands::lsp::lsp_check_binary,
+            commands::lsp::lsp_start,
+            commands::lsp::lsp_write,
+            commands::lsp::lsp_stop,
+            // Debugger commands
+            debugger::commands::debug_check_binary,
+            debugger::commands::debug_start,
+            debugger::commands::debug_write,
+            debugger::commands::debug_stop,
+            // Build & Run commands
+            build::commands::build_check_binary,
+            build::commands::build_start,
+            build::commands::build_write,
+            build::commands::build_stop,
+            build::commands::build_kill,
+            // Test Runner commands
+            testing::commands::test_check_binary,
+            testing::commands::test_start,
+            testing::commands::test_write,
+            testing::commands::test_stop,
+            testing::commands::test_kill,
         ])
         .setup(|_app| {
             log::info!("CodeX desktop native backend initialized");
@@ -92,6 +134,10 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 term_mgr_exit.terminate_all();
                 proc_mgr_exit.terminate_all();
+                lsp_mgr_exit.terminate_all();
+                debug_mgr_exit.terminate_all();
+                build_mgr_exit.terminate_all();
+                test_mgr_exit.terminate_all();
                 watcher_exit.unwatch();
             }
         });
