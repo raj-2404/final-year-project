@@ -60,6 +60,19 @@ public class RoomController {
         return ResponseEntity.ok(Map.of("exists", exists));
     }
 
+    @GetMapping("/{roomCode}/files/content")
+    public ResponseEntity<Map<String, String>> getFileContent(
+            @PathVariable String roomCode,
+            @RequestParam(required = false) String fileId,
+            @RequestParam(required = false) String path
+    ) {
+        String content = roomService.getFileContent(roomCode, fileId, path);
+        if (content != null) {
+            return ResponseEntity.ok(Map.of("content", content));
+        }
+        return ResponseEntity.notFound().build();
+    }
+
     @PutMapping("/{roomCode}/visibility")
     public ResponseEntity<RoomDto> updateVisibility(
             @PathVariable String roomCode,
@@ -108,7 +121,7 @@ public class RoomController {
             @RequestBody Map<String, String> payload
     ) {
         String treeJson = payload.getOrDefault("fileTreeJson", "");
-        roomService.updateCode(roomCode, treeJson);
+        roomService.updateTree(roomCode, treeJson);
         return ResponseEntity.ok(Map.of("success", true));
     }
 }

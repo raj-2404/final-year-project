@@ -557,6 +557,26 @@ class LspManager {
   }
 
   /**
+   * Requests code actions from language server for given language and range.
+   * @param {string} languageId - Target language ID
+   * @param {string} uriStr - Canonical URI
+   * @param {object} range - LSP Range { start: { line, character }, end: { line, character } }
+   * @param {object} context - { diagnostics, only }
+   * @returns {Promise<Array>}
+   */
+  async getCodeActions(languageId, uriStr, range, context = {}) {
+    if (!this.isLspLanguage(languageId)) return [];
+    try {
+      const client = await this.getOrStartClient(languageId);
+      if (!client) return [];
+      return await client.getCodeActions(uriStr, range, context);
+    } catch (err) {
+      console.warn(`[LspManager] getCodeActions error for ${languageId}:`, err);
+      return [];
+    }
+  }
+
+  /**
    * Shuts down all active LSP servers.
    */
   async shutdownAll() {

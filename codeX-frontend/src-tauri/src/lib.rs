@@ -1,5 +1,6 @@
 pub mod build;
 pub mod commands;
+pub mod coverage;
 pub mod debugger;
 pub mod filesystem;
 pub mod git;
@@ -8,14 +9,17 @@ pub mod platform;
 pub mod process;
 pub mod terminal;
 pub mod testing;
+pub mod workspace;
 
 use build::BuildManager;
+use coverage::CoverageManager;
 use debugger::DebuggerManager;
 use filesystem::FileWatcher;
 use lsp::LspManager;
 use process::ProcessManager;
 use terminal::TerminalManager;
 use testing::TestManager;
+use workspace::WorkspaceManager;
 
 #[tauri::command]
 fn get_desktop_info() -> serde_json::Value {
@@ -35,6 +39,8 @@ pub fn run() {
     let debugger_manager = DebuggerManager::new();
     let build_manager = BuildManager::new();
     let test_manager = TestManager::new();
+    let coverage_manager = CoverageManager::new();
+    let workspace_manager = WorkspaceManager::new();
 
     let term_mgr_exit = terminal_manager.clone();
     let proc_mgr_exit = process_manager.clone();
@@ -43,6 +49,7 @@ pub fn run() {
     let debug_mgr_exit = debugger_manager.clone();
     let build_mgr_exit = build_manager.clone();
     let test_mgr_exit = test_manager.clone();
+    let coverage_mgr_exit = coverage_manager.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
@@ -53,6 +60,8 @@ pub fn run() {
         .manage(debugger_manager)
         .manage(build_manager)
         .manage(test_manager)
+        .manage(coverage_manager)
+        .manage(workspace_manager)
         .invoke_handler(tauri::generate_handler![
             get_desktop_info,
             // Filesystem commands
@@ -84,15 +93,29 @@ pub fn run() {
             // Git commands
             commands::git::git_status,
             commands::git::git_branches,
+            commands::git::git_branch_create,
+            commands::git::git_branch_delete,
+            commands::git::git_branch_rename,
             commands::git::git_checkout,
             commands::git::git_stage,
             commands::git::git_unstage,
+            commands::git::git_discard,
             commands::git::git_commit,
             commands::git::git_diff,
+            commands::git::git_show,
             commands::git::git_log,
             commands::git::git_fetch,
             commands::git::git_pull,
             commands::git::git_push,
+            commands::git::git_stash_list,
+            commands::git::git_stash_save,
+            commands::git::git_stash_apply,
+            commands::git::git_stash_pop,
+            commands::git::git_stash_drop,
+            commands::git::git_merge,
+            commands::git::git_merge_abort,
+            commands::git::git_conflict_stages,
+            commands::git::git_discover_repos,
             // Process management commands
             commands::process::proc_start,
             commands::process::proc_stop,
@@ -123,6 +146,33 @@ pub fn run() {
             testing::commands::test_write,
             testing::commands::test_stop,
             testing::commands::test_kill,
+            // Coverage commands
+            coverage::commands::coverage_check_binary,
+            coverage::commands::coverage_start,
+            coverage::commands::coverage_write,
+            coverage::commands::coverage_stop,
+            coverage::commands::coverage_kill,
+            // Workspace commands
+            workspace::commands::ws_open_folder,
+            workspace::commands::ws_open_workspace_file,
+            workspace::commands::ws_save_workspace_dialog,
+            workspace::commands::ws_set_active_roots,
+            workspace::commands::ws_add_root,
+            workspace::commands::ws_remove_root,
+            workspace::commands::ws_get_roots,
+            workspace::commands::ws_list_directory,
+            workspace::commands::ws_get_file_metadata,
+            workspace::commands::ws_create_file,
+            workspace::commands::ws_create_folder,
+            workspace::commands::ws_rename,
+            workspace::commands::ws_move,
+            workspace::commands::ws_delete,
+            workspace::commands::ws_read_file,
+            workspace::commands::ws_write_file,
+            workspace::commands::ws_reveal,
+            workspace::commands::ws_detect_project,
+            workspace::commands::ws_watch,
+            workspace::commands::ws_unwatch,
         ])
         .setup(|_app| {
             log::info!("CodeX desktop native backend initialized");
@@ -138,6 +188,7 @@ pub fn run() {
                 debug_mgr_exit.terminate_all();
                 build_mgr_exit.terminate_all();
                 test_mgr_exit.terminate_all();
+                coverage_mgr_exit.terminate_all();
                 watcher_exit.unwatch();
             }
         });

@@ -8,3 +8,5 @@ export * from './lsp.js';
 export * from './debugger.js';
 export * from './build.js';
 export * from './testing.js';
+export * from './coverage.js';
+export * from './workspace.js';

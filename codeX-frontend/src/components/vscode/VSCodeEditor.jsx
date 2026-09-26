@@ -39,22 +39,44 @@ import {
   Square,
   Circle,
   FlaskConical,
+  ShieldCheck,
+  Lightbulb,
+  Wand2,
+  FolderOpen,
+  PlusSquare,
+  MinusCircle,
+  FolderGit2,
+  GitCommit,
+  RotateCcw,
 } from 'lucide-react';
 
 import { roomsApi } from '../../services/api';
 import { stompService } from '../../services/stompService';
 import { localFileSystem } from '../../services/localFileSystem';
-import { filesystemService, gitService, platformService, isDesktopApp } from '../../services/native';
+import { filesystemService, gitService, platformService, workspaceService, isDesktopApp } from '../../services/native';
+import {
+  workspaceManager,
+  workspaceFiles,
+  workspaceEvents,
+  WorkspaceEventType,
+  WorkspaceModel,
+} from '../../workspace';
+import ExplorerPanel from '../explorer/ExplorerPanel';
+import RecentWorkspacesModal from '../explorer/RecentWorkspacesModal';
 import FileIcon from './FileIcon';
 import QuickOpenModal from './QuickOpenModal';
 import CollabPopover from './CollabPopover';
 import BottomPanel from './BottomPanel';
 import SourceControlPanel from './SourceControlPanel';
+import GitHistoryModal from './GitHistoryModal';
 import RunDebugPanel from './RunDebugPanel';
 import TestExplorerPanel from './TestExplorerPanel';
+import CoveragePanel from './CoveragePanel';
+import RefactorPreviewModal from './RefactorPreviewModal';
 import CommandPaletteModal from './CommandPaletteModal';
 import TeamModal from '../team/TeamModal';
 import './VSCode.css';
+import { gitManager, gitDiff, gitBranches, gitStash, gitHistory } from '../../git';
 import {
   getLanguageForFilename,
   getLanguageLabel,
@@ -64,31 +86,58 @@ import {
   languageService,
   modelManager,
   languageProviderRegistry,
+  codeActionManager,
 } from '../../editor';
 import { debuggerManager, breakpointManager } from '../../debugger';
 import DebugToolbar from './DebugToolbar';
 import { buildManager, runManager } from '../../build';
 import { testManager } from '../../testing';
+import { coverageManager, coverageDecorations } from '../../coverage';
 
 export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   const isDesktop = isDesktopApp();
   const isOffline = Boolean(
     room.isOffline ||
     !room.roomCode ||
-    room.roomCode.startsWith('local-') ||
-    !user?.id ||
-    user?.id === 'offline-local-user'
+    room.roomCode.startsWith('local-')
   );
 
-  // Activity Bar active tab
-  const [activeActivity, setActiveActivity] = useState('explorer'); // 'explorer' | 'search' | 'git' | 'debug' | 'extensions'
+  const isApplyingRemoteRef = useRef(false);
 
-  // Tree state
+  // Activity Bar active tab (persisted in sessionStorage)
+  const [activeActivity, setActiveActivity] = useState(() => {
+    try {
+      return sessionStorage.getItem('codex_active_activity') || 'explorer';
+    } catch {
+      return 'explorer';
+    }
+  });
+
+  // Tree state (persisted in sessionStorage)
   const [fileTree, setFileTree] = useState([]);
-  const [activeFileId, setActiveFileId] = useState(null);
-  const [openTabIds, setOpenTabIds] = useState([]);
+  const [activeFileId, setActiveFileId] = useState(() => {
+    try {
+      return sessionStorage.getItem('codex_active_file') || null;
+    } catch {
+      return null;
+    }
+  });
+  const [openTabIds, setOpenTabIds] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('codex_open_tabs');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [dirtyFileIds, setDirtyFileIds] = useState(new Set());
-  const [expandedFolders, setExpandedFolders] = useState(new Set(['folder-root', 'folder-src']));
+  const [expandedFolders, setExpandedFolders] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('codex_expanded_folders');
+      if (saved) return new Set(JSON.parse(saved));
+    } catch {}
+    return new Set(['folder-root', 'folder-src']);
+  });
   const [isRootFolderCollapsed, setIsRootFolderCollapsed] = useState(false);
 
   // Inline creation & rename states
@@ -129,6 +178,9 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     untracked: [],
   });
   const [diffFile, setDiffFile] = useState(null); // { path, original, modified, language, isStaged }
+  const [showGitHistory, setShowGitHistory] = useState(false);
+  const [currentWorkspace, setCurrentWorkspace] = useState(workspaceManager.getWorkspace());
+  const [showRecentWorkspaces, setShowRecentWorkspaces] = useState(false);
 
   // Disk Sync Status
   const [diskSyncStatus, setDiskSyncStatus] = useState(
@@ -150,6 +202,54 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   if (room.localDirHandle && !localDirHandlesRef.current.has('folder-root')) {
     localDirHandlesRef.current.set('folder-root', room.localDirHandle);
   }
+
+  // Persist editor session state to sessionStorage
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('codex_active_activity', activeActivity);
+    } catch {}
+  }, [activeActivity]);
+
+  useEffect(() => {
+    try {
+      if (activeFileId) {
+        sessionStorage.setItem('codex_active_file', activeFileId);
+      } else {
+        sessionStorage.removeItem('codex_active_file');
+      }
+    } catch {}
+  }, [activeFileId]);
+
+  useEffect(() => {
+    try {
+      if (openTabIds && openTabIds.length > 0) {
+        sessionStorage.setItem('codex_open_tabs', JSON.stringify(openTabIds));
+      } else {
+        sessionStorage.removeItem('codex_open_tabs');
+      }
+    } catch {}
+  }, [openTabIds]);
+
+  useEffect(() => {
+    try {
+      if (expandedFolders && expandedFolders.size > 0) {
+        sessionStorage.setItem('codex_expanded_folders', JSON.stringify(Array.from(expandedFolders)));
+      }
+    } catch {}
+  }, [expandedFolders]);
+
+  // Keep sessionStorage updated with the latest in-memory file tree
+  useEffect(() => {
+    if (!fileTree || fileTree.length === 0) return;
+    try {
+      const raw = sessionStorage.getItem('codex_current_workspace');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        parsed.initialTree = fileTree;
+        sessionStorage.setItem('codex_current_workspace', JSON.stringify(parsed));
+      }
+    } catch {}
+  }, [fileTree]);
 
   const saveTimerRef = useRef(null);
   const editorRef = useRef(null);
@@ -173,10 +273,197 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   const refreshGitStatus = useCallback(async () => {
     if (!isDesktop || !room.diskPath) return;
     try {
-      const st = await gitService.getStatus(room.diskPath);
-      setGitStatus(st);
+      let activeRepo = gitManager.getActiveRepository();
+      if (!activeRepo) {
+        await gitManager.discoverWorkspaceRepositories(room.diskPath);
+        activeRepo = gitManager.getActiveRepository();
+      }
+      if (activeRepo) {
+        await activeRepo.refresh();
+        setGitStatus(activeRepo.status);
+      } else {
+        const st = await gitService.getStatus(room.diskPath);
+        setGitStatus(st);
+      }
     } catch {}
   }, [isDesktop, room.diskPath]);
+
+  // Refresh Explorer for all workspace folders (debounced to avoid thrashing)
+  const refreshExplorerTimerRef = useRef(null);
+  const handleRefreshExplorer = useCallback(() => {
+    if (!isDesktop) return;
+    if (refreshExplorerTimerRef.current) clearTimeout(refreshExplorerTimerRef.current);
+    refreshExplorerTimerRef.current = setTimeout(async () => {
+      try {
+        const ws = workspaceManager.getWorkspace();
+        const folders = ws?.folders?.length ? ws.folders : (room.diskPath ? [{ path: room.diskPath }] : []);
+        let allItems = [];
+        for (const folder of folders) {
+          const items = await workspaceFiles.listDirectory(folder.path, false, 6);
+          allItems = [...allItems, ...items];
+        }
+        if (allItems.length > 0) {
+          setFileTree((prevTree) => {
+            const contentMap = new Map();
+            prevTree.forEach((item) => {
+              if (item.content !== undefined) contentMap.set(item.path || item.id, item.content);
+            });
+            return allItems.map((item) => {
+              const existing = contentMap.get(item.path || item.id);
+              return existing !== undefined ? { ...item, content: existing } : item;
+            });
+          });
+        }
+        refreshGitStatus();
+      } catch (err) {
+        console.warn('Failed to refresh explorer:', err);
+      }
+    }, 250);
+  }, [isDesktop, room.diskPath, refreshGitStatus]);
+
+  // Workspace Dialog Handlers
+  const handleOpenFilePicker = async () => {
+    if (!isDesktop) return;
+    try {
+      const file = await filesystemService.pickFile();
+      if (file) {
+        const content = await workspaceFiles.readFile(file).catch(() => '');
+        const fileName = file.split('/').filter(Boolean).pop() || 'file';
+        const fileEntry = {
+          id: `file-${file}`,
+          name: fileName,
+          path: file,
+          content,
+          type: 'file',
+        };
+        handleSelectFile(fileEntry);
+      }
+    } catch (err) {
+      showToast(`Open file error: ${err.message || err}`);
+    }
+  };
+
+  const handleOpenFolderDialog = async () => {
+    if (!isDesktop) return;
+    try {
+      const folder = await workspaceService.openFolder();
+      if (folder) {
+        const ws = await workspaceManager.openFolder(folder);
+        setCurrentWorkspace(ws);
+        room.diskPath = folder;
+        await handleRefreshExplorer();
+        showToast(`Opened folder: ${folder}`);
+      }
+    } catch (err) {
+      showToast(`Open folder error: ${err.message || err}`);
+    }
+  };
+
+  const handleOpenWorkspaceDialog = async () => {
+    if (!isDesktop) return;
+    try {
+      const wsFile = await workspaceService.openWorkspaceFile();
+      if (wsFile) {
+        const ws = await workspaceManager.openWorkspace(wsFile);
+        setCurrentWorkspace(ws);
+        await handleRefreshExplorer();
+        showToast(`Opened workspace: ${ws.name}`);
+      }
+    } catch (err) {
+      showToast(`Open workspace error: ${err.message || err}`);
+    }
+  };
+
+  const handleSaveWorkspaceDialog = async () => {
+    if (!isDesktop) return;
+    try {
+      const target = await workspaceService.saveWorkspaceDialog(`${currentWorkspace?.name || 'project'}.codex-workspace`);
+      if (target) {
+        await workspaceManager.saveWorkspace(target);
+        showToast(`Saved workspace to ${target}`);
+      }
+    } catch (err) {
+      showToast(`Save workspace error: ${err.message || err}`);
+    }
+  };
+
+  const handleAddFolderDialog = async () => {
+    if (!isDesktop) return;
+    try {
+      const folder = await workspaceService.openFolder();
+      if (folder) {
+        await workspaceManager.addWorkspaceFolder(folder);
+        setCurrentWorkspace(workspaceManager.getWorkspace());
+        await handleRefreshExplorer();
+        showToast(`Added folder to workspace: ${folder}`);
+      }
+    } catch (err) {
+      showToast(`Add folder error: ${err.message || err}`);
+    }
+  };
+
+  const handleRemoveFolderDialog = async () => {
+    if (!currentWorkspace || currentWorkspace.folders.length <= 1) {
+      showToast('Cannot remove root folder of single-folder workspace.');
+      return;
+    }
+    const folderNames = currentWorkspace.folders.map((f) => f.name).join(', ');
+    const name = window.prompt(`Enter folder name to remove from workspace (${folderNames}):`);
+    if (!name) return;
+    const match = currentWorkspace.folders.find((f) => f.name.toLowerCase() === name.trim().toLowerCase());
+    if (match) {
+      await workspaceManager.removeWorkspaceFolder(match.path);
+      setCurrentWorkspace(workspaceManager.getWorkspace());
+      await handleRefreshExplorer();
+      showToast(`Removed folder: ${match.name}`);
+    } else {
+      showToast(`Folder "${name}" not found in workspace.`);
+    }
+  };
+
+  const handleRenameWorkspace = () => {
+    const newName = window.prompt('Enter new workspace name:', currentWorkspace?.name || 'Workspace');
+    if (newName && newName.trim()) {
+      workspaceManager.renameWorkspace(newName.trim());
+      setCurrentWorkspace(workspaceManager.getWorkspace());
+      showToast(`Renamed workspace to "${newName.trim()}"`);
+    }
+  };
+
+  const handleReloadWorkspace = async () => {
+    try {
+      await workspaceManager.reloadWorkspace();
+      await handleRefreshExplorer();
+      showToast('Workspace reloaded');
+    } catch (err) {
+      showToast(`Reload error: ${err.message || err}`);
+    }
+  };
+
+  const handleClearRecentWorkspaces = () => {
+    workspaceManager.clearRecentWorkspaces();
+    showToast('Cleared recent workspaces');
+  };
+
+  const handleOpenWorkspaceFromPath = async (targetPath) => {
+    if (!targetPath) return;
+    try {
+      if (targetPath.endsWith('.codex-workspace')) {
+        const ws = await workspaceManager.openWorkspace(targetPath);
+        setCurrentWorkspace(ws);
+        await handleRefreshExplorer();
+        showToast(`Opened workspace: ${ws.name}`);
+      } else {
+        const ws = await workspaceManager.openFolder(targetPath);
+        setCurrentWorkspace(ws);
+        room.diskPath = targetPath;
+        await handleRefreshExplorer();
+        showToast(`Opened folder: ${targetPath}`);
+      }
+    } catch (err) {
+      showToast(`Open error: ${err.message || err}`);
+    }
+  };
 
   // Debugger Toolbar & Execution State
   const [debugToolbarState, setDebugToolbarState] = useState({
@@ -199,6 +486,15 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     };
   }, []);
 
+  // Refactoring Preview Modal State
+  const [refactorPreview, setRefactorPreview] = useState(null);
+
+  useEffect(() => {
+    return codeActionManager.onPreviewChange((preview) => {
+      setRefactorPreview(preview);
+    });
+  }, []);
+
   // 1. Initial Load & Workspace Initialization
   useEffect(() => {
     let isMounted = true;
@@ -207,44 +503,119 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       try {
         let initialTree = [];
 
-        // If local desktop folder opened with preloaded initialTree
+        // 1. If opening a local folder on Desktop, ALWAYS open and register with workspaceManager
+        if (room.diskPath && isDesktop) {
+          try {
+            const ws = await workspaceManager.openFolder(room.diskPath);
+            if (ws) setCurrentWorkspace(ws);
+          } catch (e) {
+            console.warn('[VSCodeEditor] Could not open folder in workspaceManager:', e);
+          }
+        }
+
+        // 2. Load initialTree: from preloaded room prop or directly from disk
         if (room.initialTree && Array.isArray(room.initialTree) && room.initialTree.length > 0) {
           initialTree = room.initialTree;
         } else if (room.diskPath && isDesktop) {
           try {
             initialTree = await filesystemService.listDirectory(room.diskPath);
           } catch {}
-        } else if (isDesktop && !room.diskPath) {
-          // If on desktop and room has no disk path, allocate a real project folder
+        }
+
+        // 3. Check remote backend if roomCode exists and online
+        let roomData = null;
+        if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
           try {
-            const folderTitle = room.title || 'CodeX-Project';
+            roomData = await roomsApi.getRoom(room.roomCode);
+            if (roomData?.codeContent && roomData.codeContent.trim().startsWith('[')) {
+              const parsed = JSON.parse(roomData.codeContent);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                if (!initialTree || initialTree.length === 0) {
+                  initialTree = parsed;
+                } else {
+                  // Merge contents from remote roomData into initialTree
+                  const contentMap = new Map();
+                  for (const p of parsed) {
+                    if (p.id && p.content !== undefined && p.content !== null) {
+                      contentMap.set(p.id, p.content);
+                    }
+                  }
+                  initialTree = initialTree.map((item) => {
+                    if (item.type === 'file' && (item.content === undefined || item.content === null) && contentMap.has(item.id)) {
+                      return { ...item, content: contentMap.get(item.id) };
+                    }
+                    return item;
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[VSCodeEditor] Could not fetch remote room:', e);
+          }
+        }
+
+        // 4. For Desktop: If joining a remote workspace without a local disk path, allocate local folder and materialize files
+        if (isDesktop && !room.diskPath) {
+          try {
+            const folderTitle = room.title || roomData?.title || 'CodeX-Project';
             const created = await filesystemService.createProjectFolder(folderTitle);
             if (created) {
               room.diskPath = created;
               try {
-                initialTree = await filesystemService.listDirectory(created);
+                const ws = await workspaceManager.openFolder(created);
+                if (ws) setCurrentWorkspace(ws);
               } catch {}
+
+              // Materialize remote files onto local PC disk so local tools (LSP, DAP, terminal) work
+              if (initialTree && initialTree.length > 0) {
+                for (const item of initialTree) {
+                  if (item.type === 'file' && item.name) {
+                    const localPath = `${created}/${item.name}`.replace(/\/+/g, '/');
+                    item.path = localPath;
+                    if (item.content !== undefined && item.content !== null) {
+                      await filesystemService.writeFile(localPath, item.content).catch(() => {});
+                    }
+                  } else if (item.type === 'folder' && item.name && item.id !== 'folder-root') {
+                    const localPath = `${created}/${item.name}`.replace(/\/+/g, '/');
+                    item.path = localPath;
+                    await filesystemService.createFolder(localPath).catch(() => {});
+                  }
+                }
+              } else {
+                try {
+                  initialTree = await filesystemService.listDirectory(created);
+                } catch {}
+              }
             }
           } catch (e) {
-            console.warn('[VSCodeEditor] Could not auto-allocate project directory:', e);
+            console.warn('[VSCodeEditor] Auto-allocate project directory error:', e);
           }
         }
 
-        // Check remote backend if roomCode exists and online
-        if (!isOffline && (!initialTree || initialTree.length === 0) && room.roomCode && !room.roomCode.startsWith('local-')) {
-          try {
-            const roomData = await roomsApi.getRoom(room.roomCode);
-            if (roomData.codeContent && roomData.codeContent.trim().startsWith('[')) {
-              initialTree = JSON.parse(roomData.codeContent);
-            }
-          } catch {}
+        // 5. For Web / Browser mode or remote rooms: create a virtual WorkspaceModel so workspace state and folders are fully initialized
+        if (!isDesktop || !room.diskPath) {
+          const virtualName = room.title || roomData?.title || 'Workspace';
+          const virtualModel = new WorkspaceModel({
+            id: `ws-${room.roomCode || 'virtual'}`,
+            name: virtualName,
+            root: 'workspace',
+            folders: [
+              {
+                id: 'virtual-root',
+                name: virtualName,
+                path: 'workspace',
+              },
+            ],
+            isMultiRoot: false,
+          });
+          setCurrentWorkspace(virtualModel);
         }
 
         if (!initialTree || initialTree.length === 0) {
           initialTree = [
             {
               id: 'folder-root',
-              name: room.title || 'Workspace',
+              name: room.title || roomData?.title || 'Workspace',
               type: 'folder',
               parentId: null,
               path: room.diskPath || null,
@@ -256,30 +627,109 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
         setFileTree(initialTree);
 
-        const firstFile = initialTree.find((item) => item.type === 'file');
-        if (firstFile) {
-          setActiveFileId(firstFile.id);
-          setOpenTabIds([firstFile.id]);
+        // Check if there are preserved open tabs & active file in sessionStorage
+        let restoredActiveId = null;
+        let restoredTabs = [];
+        try {
+          restoredActiveId = sessionStorage.getItem('codex_active_file');
+          const rawTabs = sessionStorage.getItem('codex_open_tabs');
+          if (rawTabs) restoredTabs = JSON.parse(rawTabs);
+        } catch {}
 
-          // Load content if on desktop
-          if (isDesktop && firstFile.path && firstFile.content === undefined) {
-            filesystemService.readFile(firstFile.path).then((text) => {
+        const validTabs = Array.isArray(restoredTabs)
+          ? restoredTabs.filter((id) => initialTree.some((item) => item.id === id && item.type === 'file'))
+          : [];
+
+        let targetActiveFile = null;
+        if (validTabs.length > 0) {
+          setOpenTabIds(validTabs);
+          if (restoredActiveId && validTabs.includes(restoredActiveId)) {
+            setActiveFileId(restoredActiveId);
+            targetActiveFile = initialTree.find((item) => item.id === restoredActiveId);
+          } else {
+            setActiveFileId(validTabs[0]);
+            targetActiveFile = initialTree.find((item) => item.id === validTabs[0]);
+          }
+        } else {
+          const firstFile = initialTree.find((item) => item.type === 'file');
+          if (firstFile) {
+            setActiveFileId(firstFile.id);
+            setOpenTabIds([firstFile.id]);
+            targetActiveFile = firstFile;
+          }
+        }
+
+        // Load content if on desktop or web if missing
+        if (targetActiveFile && (targetActiveFile.content === undefined || targetActiveFile.content === null)) {
+          if (isDesktop && targetActiveFile.path) {
+            filesystemService.readFile(targetActiveFile.path).then((text) => {
               if (isMounted) {
                 setFileTree((prev) =>
-                  prev.map((item) => (item.id === firstFile.id ? { ...item, content: text } : item))
+                  prev.map((item) => (item.id === targetActiveFile.id ? { ...item, content: text } : item))
                 );
               }
             }).catch(console.error);
+          } else if (!isDesktop && (targetActiveFile.content === undefined || targetActiveFile.content === null) && room.roomCode && !room.roomCode.startsWith('local-')) {
+            // Web / browser: load content for active file if missing
+            roomsApi.getFileContent(room.roomCode, targetActiveFile.id, targetActiveFile.path).then((res) => {
+              if (res?.content !== undefined && isMounted) {
+                setFileTree((prev) =>
+                  prev.map((item) => (item.id === targetActiveFile.id ? { ...item, content: res.content } : item))
+                );
+              }
+            }).catch(() => {});
           }
+        }
+
+        // On Desktop with local folder: asynchronously preload files < 300KB so web peers get code
+        if (isDesktop && room.diskPath) {
+          setTimeout(async () => {
+            try {
+              let updatedAny = false;
+              const currentList = fileTreeRef.current && fileTreeRef.current.length > 0 ? fileTreeRef.current : initialTree;
+              const loadedTree = await Promise.all(
+                currentList.map(async (item) => {
+                  if (item.type === 'file' && item.path && (item.content === undefined || item.content === null) && (!item.size || item.size < 300000)) {
+                    try {
+                      const text = await filesystemService.readFile(item.path);
+                      updatedAny = true;
+                      return { ...item, content: text };
+                    } catch {
+                      return item;
+                    }
+                  }
+                  return item;
+                })
+              );
+              if (updatedAny && isMounted) {
+                setFileTree(loadedTree);
+                if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
+                  stompService.sendTreeChange(room.roomCode, 'SYNC', loadedTree, activeFileIdRef.current, user?.name || user?.username);
+                }
+              }
+            } catch (err) {
+              console.warn('[VSCodeEditor] Background preload error:', err);
+            }
+          }, 400);
         }
 
         setIsSynced(true);
         refreshGitStatus();
 
-        // 2. Connect to STOMP Broker for Live Real-Time Multi-User Collaboration (if online)
+        // 4. Connect to STOMP Broker for Live Real-Time Multi-User Collaboration (if online)
         if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
           await stompService.connect(room.roomCode, {
             userName: user?.name || user?.username || 'Developer',
+
+            onConnected: () => {
+              // If we have files in our tree, broadcast SYNC snapshot so joiners receive them
+              if (fileTreeRef.current && fileTreeRef.current.length > 1) {
+                stompService.sendTreeChange(room.roomCode, 'SYNC', fileTreeRef.current, activeFileIdRef.current, user?.name || user?.username);
+              } else {
+                // Otherwise request sync from server/peers
+                stompService.requestTreeSync(room.roomCode, user?.name || user?.username);
+              }
+            },
 
             onPresence: (data) => {
               if (data?.usersCount !== undefined) {
@@ -287,6 +737,10 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               }
               if (data?.type === 'JOIN' && data?.senderName && data.senderName !== (user?.name || user?.username)) {
                 showToast(`${data.senderName} joined workspace`);
+                // Host sends current tree snapshot to the new joiner
+                if (fileTreeRef.current && fileTreeRef.current.length > 1) {
+                  stompService.sendTreeChange(room.roomCode, 'SYNC', fileTreeRef.current, activeFileIdRef.current, user?.name || user?.username);
+                }
               } else if (data?.type === 'LEAVE') {
                 showToast('A teammate left workspace');
               }
@@ -298,9 +752,38 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               try {
                 const remoteTree = JSON.parse(data.fileTreeJson);
                 if (Array.isArray(remoteTree)) {
-                  setFileTree(remoteTree);
+                  setFileTree((prevTree) => {
+                    const contentMap = new Map();
+                    for (const item of prevTree) {
+                      if (item.id && item.content !== undefined && item.content !== null) {
+                        contentMap.set(item.id, item.content);
+                      }
+                    }
+                    return remoteTree.map((item) => {
+                      if (item.type === 'file' && (item.content === undefined || item.content === null) && contentMap.has(item.id)) {
+                        return { ...item, content: contentMap.get(item.id) };
+                      }
+                      return item;
+                    });
+                  });
                   setIsSynced(true);
-                  showToast(`Folders updated (${data.type})`);
+                  if (data.type !== 'SYNC') {
+                    showToast(`Folders updated (${data.type})`);
+                  }
+
+                  // If on desktop and room has local folder, ensure remote files exist on local disk and have proper paths
+                  if (isDesktop && room.diskPath) {
+                    const cleanDiskPath = room.diskPath.replace(/\\/g, '/').replace(/\/+$/, '');
+                    for (const item of remoteTree) {
+                      if (!item.path || !item.path.startsWith(cleanDiskPath)) {
+                        item.path = `${cleanDiskPath}/${item.name || ''}`.replace(/\/+/g, '/');
+                      }
+                      if (item.type === 'file' && item.name && item.content !== undefined) {
+                        workspaceManager.recordInternalWrite(item.path);
+                        filesystemService.writeFile(item.path, item.content).catch(() => {});
+                      }
+                    }
+                  }
 
                   if (data.type === 'FILE_DELETE' && !remoteTree.some((f) => f.id === activeFileIdRef.current)) {
                     const nextFile = remoteTree.find((f) => f.type === 'file');
@@ -320,18 +803,68 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
             onCodeChange: (data) => {
               if (data.senderId === stompService.getClientId()) return;
 
+              // Flexible matcher: checks id, path, normalized path without /private, and filename
+              const matchesIncoming = (item) => {
+                if (!item) return false;
+                if (data.fileId && (item.id === data.fileId || item.path === data.fileId)) return true;
+                if (data.filePath && (item.path === data.filePath || item.id === data.filePath)) return true;
+                if (item.path && data.filePath) {
+                  const normItem = item.path.replace(/\\/g, '/').replace(/^\/private/, '').replace(/\/+$/, '');
+                  const normData = data.filePath.replace(/\\/g, '/').replace(/^\/private/, '').replace(/\/+$/, '');
+                  if (normItem === normData || normItem.endsWith('/' + normData) || normData.endsWith('/' + normItem)) return true;
+                }
+                const targetName = data.fileName || (data.filePath ? data.filePath.split('/').filter(Boolean).pop() : null) || (data.fileId ? data.fileId.split('/').filter(Boolean).pop() : null);
+                if (targetName && (item.name === targetName || item.id?.endsWith('/' + targetName) || item.path?.endsWith('/' + targetName))) {
+                  return true;
+                }
+                return false;
+              };
+
+              // 1. Update in-memory file content
               setFileTree((prevTree) =>
                 prevTree.map((item) =>
-                  item.id === data.fileId ? { ...item, content: data.code } : item
+                  matchesIncoming(item) ? { ...item, content: data.code } : item
                 )
               );
 
-              // Real-time disk sync for browser folder links
-              if (room.localDirHandle && localFileHandlesRef.current.has(data.fileId)) {
-                const fileHandleObj = localFileHandlesRef.current.get(data.fileId);
-                localFileSystem.writeFileToDisk(fileHandleObj.handle, data.code).then((ok) => {
-                  if (ok) setDiskSyncStatus('synced');
-                });
+              // 2. Direct model update for active file without tearing down editor, jumping cursor, or triggering echo loop
+              const currentActiveFile = fileTreeRef.current?.find((f) => f.id === activeFileIdRef.current || f.path === activeFileIdRef.current) || activeFile;
+              if (matchesIncoming(currentActiveFile) && editorRef.current) {
+                const model = editorRef.current.getModel();
+                if (model && model.getValue() !== data.code) {
+                  const selection = editorRef.current.getSelection();
+                  isApplyingRemoteRef.current = true;
+                  try {
+                    model.setValue(data.code);
+                  } finally {
+                    isApplyingRemoteRef.current = false;
+                  }
+                  if (selection) {
+                    try {
+                      editorRef.current.setSelection(selection);
+                    } catch {}
+                  }
+                }
+              }
+
+              // 3. Real-time disk sync for desktop host (record internal write to avoid watcher thrashing)
+              if (isDesktop && room.diskPath) {
+                const fileItem = fileTreeRef.current?.find((f) => matchesIncoming(f));
+                if (fileItem?.path) {
+                  workspaceManager.recordInternalWrite(fileItem.path);
+                  filesystemService.writeFile(fileItem.path, data.code).catch(() => {});
+                }
+              }
+
+              // 4. Real-time disk sync for browser folder links
+              if (room.localDirHandle) {
+                const fileItem = fileTreeRef.current?.find((f) => matchesIncoming(f));
+                if (fileItem && localFileHandlesRef.current.has(fileItem.id)) {
+                  const fileHandleObj = localFileHandlesRef.current.get(fileItem.id);
+                  localFileSystem.writeFileToDisk(fileHandleObj.handle, data.code).then((ok) => {
+                    if (ok) setDiskSyncStatus('synced');
+                  });
+                }
               }
             },
           });
@@ -351,68 +884,6 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, [room.roomCode, room.diskPath, isOffline]);
-
-  // 2. Native File Watcher for Desktop
-  useEffect(() => {
-    if (!isDesktop || !room.diskPath) return;
-
-    let unwatchFn = null;
-
-    filesystemService
-      .watchDirectory(room.diskPath, async (change) => {
-        refreshGitStatus();
-
-        if (activeFileIdRef.current) {
-          const active = fileTreeRef.current.find((f) => f.id === activeFileIdRef.current);
-          if (active && active.path && change.paths) {
-            const normActive = active.path.replace(/\\/g, '/');
-            const changedMatch = change.paths.some(
-              (p) => p.replace(/\\/g, '/') === normActive
-            );
-            if (changedMatch) {
-              if (!dirtyFileIdsRef.current.has(active.id)) {
-                try {
-                  const refreshed = await filesystemService.readFile(active.path);
-                  setFileTree((prev) =>
-                    prev.map((item) =>
-                      item.id === active.id ? { ...item, content: refreshed } : item
-                    )
-                  );
-                } catch {}
-              } else {
-                showToast(`External modification detected on "${active.name}"`);
-              }
-            }
-          }
-        }
-
-        if (change.kind === 'create' || change.kind === 'remove') {
-          try {
-            const updated = await filesystemService.listDirectory(room.diskPath);
-            setFileTree((prevTree) => {
-              const contentMap = new Map();
-              prevTree.forEach((item) => {
-                if (item.content !== undefined) {
-                  contentMap.set(item.path || item.id, item.content);
-                }
-              });
-              return updated.map((item) => {
-                const existingContent = contentMap.get(item.path || item.id);
-                return existingContent !== undefined ? { ...item, content: existingContent } : item;
-              });
-            });
-          } catch {}
-        }
-      })
-      .then((fn) => {
-        unwatchFn = fn;
-      })
-      .catch(console.error);
-
-    return () => {
-      if (unwatchFn) unwatchFn();
-    };
-  }, [room.diskPath, isDesktop, refreshGitStatus]);
 
   const activeFile = fileTree.find((item) => item.id === activeFileId && item.type === 'file');
   const activeFileLanguage = activeFile
@@ -479,6 +950,20 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         workspaceRoot,
         onNavigate: handleNavigateToFile,
       });
+
+      // Attach Coverage Decorations Manager for gutter coverage markers
+      coverageDecorations.attachEditor(
+        editor,
+        monaco,
+        activeFile?.path || activeFile?.name,
+        room.diskPath || null
+      );
+
+      // Initialize Level 3F Code Actions & Refactoring Subsystem
+      codeActionManager.initialize(monaco, {
+        workspaceRoot: room.diskPath || null,
+        fileTree,
+      });
     }
 
     editor.onDidChangeCursorPosition((e) => {
@@ -489,7 +974,12 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     });
   };
 
-  // Update debugger active file & breakpoints when active tab changes
+  // Memoized structural fingerprint of file tree so typing content does not re-trigger model syncing or debugger re-attaching
+  const fileTreeStructureKey = React.useMemo(() => {
+    return fileTree.map((f) => `${f.id}:${f.name}:${f.path || ''}:${f.type}`).join('|');
+  }, [fileTree]);
+
+  // Update debugger active file & breakpoints when active tab changes or tree structure changes
   useEffect(() => {
     if (editorRef.current && monacoRef.current) {
       debuggerManager.attachEditor(editorRef.current, monacoRef.current, activeFile, {
@@ -497,17 +987,28 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         workspaceRoot,
         onNavigate: handleNavigateToFile,
       });
+      coverageDecorations.attachEditor(
+        editorRef.current,
+        monacoRef.current,
+        activeFile?.path || activeFile?.name,
+        room.diskPath || null
+      );
+      gitManager.updateGutterDecorations(
+        editorRef.current,
+        activeFile?.path || activeFile?.name
+      );
     }
-  }, [activeFile, fileTree, workspaceRoot, handleNavigateToFile]);
+  }, [activeFile?.id, activeFile?.path, fileTreeStructureKey, workspaceRoot, handleNavigateToFile, room.diskPath]);
 
-  // Synchronize workspace files into Monaco models so cross-file imports can be resolved
+  // Synchronize workspace files into Monaco models only when files are added, removed, or renamed
   useEffect(() => {
     if (monacoRef.current && fileTree.length > 0) {
       const root = room.diskPath || room.roomCode || 'workspace';
       languageService.updateContext(fileTree, root);
       modelManager.syncWorkspaceFiles(monacoRef.current, fileTree, root);
+      codeActionManager.updateContext({ fileTree, workspaceRoot: room.diskPath || null });
     }
-  }, [fileTree, room.diskPath, room.roomCode]);
+  }, [fileTreeStructureKey, room.diskPath, room.roomCode]);
 
   // Synchronize build problem markers into Monaco models & Problems panel
   useEffect(() => {
@@ -615,7 +1116,7 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
   // Local Code Editing in Monaco
   const handleEditorChange = (newCode) => {
-    if (!activeFile) return;
+    if (!activeFile || isApplyingRemoteRef.current) return;
 
     // Mark file as dirty
     setDirtyFileIds((prev) => new Set([...prev, activeFile.id]));
@@ -639,12 +1140,106 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
     // Broadcast live over STOMP
     if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
-      stompService.sendCodeChange(room.roomCode, activeFile.id, newCode);
+      stompService.sendCodeChange(room.roomCode, activeFile.id, newCode, {
+        filePath: activeFile.path || null,
+        fileName: activeFile.name || null,
+      });
+    }
+  };
+
+  // Workspace Lifecycle & File Watcher Subscription (mounted once, leak-free)
+  useEffect(() => {
+    let disposed = false;
+    let unlistenTauri = null;
+
+    const unsubOpen = workspaceEvents.on(WorkspaceEventType.WORKSPACE_OPENED, (ws) => {
+      setCurrentWorkspace(ws);
+      handleRefreshExplorer();
+    });
+    const unsubSaved = workspaceEvents.on(WorkspaceEventType.WORKSPACE_SAVED, (ws) => setCurrentWorkspace(ws));
+    const unsubFolders = workspaceEvents.on(WorkspaceEventType.FOLDERS_CHANGED, () => {
+      setCurrentWorkspace(workspaceManager.getWorkspace());
+      handleRefreshExplorer();
+    });
+    const unsubChange = workspaceEvents.on(WorkspaceEventType.FILE_CHANGED, (evt) => {
+      handleRefreshExplorer();
+      const currentActiveId = activeFileIdRef.current;
+      const currentFile = fileTreeRef.current?.find((f) => f.id === currentActiveId);
+
+      // Automatically update the active file without showing any warning prompt
+      if (currentFile?.path && evt.paths?.some((p) => p.replace(/\\/g, '/').replace(/^\/private/, '') === currentFile.path.replace(/\\/g, '/').replace(/^\/private/, ''))) {
+        workspaceFiles.readFile(currentFile.path).then((c) => {
+          if (editorRef.current) {
+            const model = editorRef.current.getModel();
+            if (model && model.getValue() !== c) {
+              const sel = editorRef.current.getSelection();
+              isApplyingRemoteRef.current = true;
+              try {
+                model.setValue(c);
+              } finally {
+                isApplyingRemoteRef.current = false;
+              }
+              if (sel) {
+                try {
+                  editorRef.current.setSelection(sel);
+                } catch {}
+              }
+            }
+          }
+          setFileTree((prev) =>
+            prev.map((item) => (item.id === currentActiveId ? { ...item, content: c } : item))
+          );
+          languageService.handleFileChange(currentFile, c);
+          setDirtyFileIds((prev) => {
+            const n = new Set(prev);
+            n.delete(currentActiveId);
+            return n;
+          });
+        }).catch(() => {});
+      }
+
+      // Also update any other open files in memory
+      if (evt.paths && evt.paths.length > 0) {
+        evt.paths.forEach((p) => {
+          const normP = p.replace(/\\/g, '/').replace(/^\/private/, '');
+          const matchItem = fileTreeRef.current?.find(
+            (f) => f.path && f.path.replace(/\\/g, '/').replace(/^\/private/, '') === normP
+          );
+          if (matchItem && matchItem.id !== currentActiveId) {
+            workspaceFiles.readFile(matchItem.path).then((c) => {
+              setFileTree((prev) =>
+                prev.map((item) => (item.id === matchItem.id ? { ...item, content: c } : item))
+              );
+            }).catch(() => {});
+          }
+        });
+      }
+    });
+
+    if (isDesktop) {
+      import('@tauri-apps/api/event').then(({ listen }) => {
+        if (disposed) return;
+        listen('fs-change', (event) => {
+          workspaceManager.handleFilesystemChange(event.payload);
+        }).then((fn) => {
+          if (disposed) {
+            fn();
+          } else {
+            unlistenTauri = fn;
+          }
+        });
+      }).catch(console.warn);
     }
 
-    // Persist tree debounced
-    persistTree(updatedTree);
-  };
+    return () => {
+      disposed = true;
+      unsubOpen();
+      unsubSaved();
+      unsubFolders();
+      unsubChange();
+      if (unlistenTauri) unlistenTauri();
+    };
+  }, [isDesktop]);
 
   // Save active file to local disk (Cmd/Ctrl + S)
   const handleSaveActiveFile = async () => {
@@ -664,6 +1259,10 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
           return next;
         });
         showToast(`Saved ${activeFile.name}`);
+        gitManager.scheduleRefresh();
+        if (editorRef.current && activeFile) {
+          gitManager.updateGutterDecorations(editorRef.current, activeFile.path || activeFile.name);
+        }
         refreshGitStatus();
       } catch (err) {
         showToast(`Failed to save: ${err.message || err}`);
@@ -920,14 +1519,52 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     // Notify Language Service / LSP of document open
     languageService.handleFileOpen(file);
 
-    if (isDesktop && file.path && (file.content === undefined || file.content === null)) {
-      try {
-        const text = await filesystemService.readFile(file.path);
-        setFileTree((prev) =>
-          prev.map((item) => (item.id === file.id ? { ...item, content: text } : item))
-        );
-      } catch (err) {
-        console.error('Failed to read file from disk:', err);
+    // Load content on demand if missing
+    if (file.content === undefined || file.content === null) {
+      if (isDesktop && file.path) {
+        try {
+          const text = await filesystemService.readFile(file.path);
+          setFileTree((prev) =>
+            prev.map((item) => (item.id === file.id ? { ...item, content: text } : item))
+          );
+          if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
+            stompService.sendCodeChange(room.roomCode, file.id, text, {
+              filePath: file.path || null,
+              fileName: file.name || null,
+            });
+          }
+        } catch (err) {
+          console.error('Failed to read file from disk:', err);
+        }
+      } else if (room.localFileHandles && localFileHandlesRef.current?.has(file.id)) {
+        try {
+          const fileHandleObj = localFileHandlesRef.current.get(file.id);
+          const fileObj = await fileHandleObj.handle.getFile();
+          const text = await fileObj.text();
+          setFileTree((prev) =>
+            prev.map((item) => (item.id === file.id ? { ...item, content: text } : item))
+          );
+          if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
+            stompService.sendCodeChange(room.roomCode, file.id, text, {
+              filePath: file.path || null,
+              fileName: file.name || null,
+            });
+          }
+        } catch (err) {
+          console.error('Failed to read file from browser handle:', err);
+        }
+      } else if (room.roomCode && !room.roomCode.startsWith('local-')) {
+        // Web / remote mode: fetch content from backend REST API!
+        try {
+          const res = await roomsApi.getFileContent(room.roomCode, file.id, file.path);
+          if (res && res.content !== undefined && res.content !== null) {
+            setFileTree((prev) =>
+              prev.map((item) => (item.id === file.id ? { ...item, content: res.content } : item))
+            );
+          }
+        } catch (err) {
+          console.warn('[VSCodeEditor] Could not fetch file content from backend:', err);
+        }
       }
     }
   };
@@ -975,13 +1612,23 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     }
   };
 
-  // Close Folder with dirty state check
-  const handleCloseWorkspace = () => {
-    if (dirtyFileIds.size > 0) {
-      const confirmClose = window.confirm(
-        `You have unsaved changes in ${dirtyFileIds.size} file(s). Are you sure you want to close this folder?`
-      );
-      if (!confirmClose) return;
+  // Close Folder with safe cleanup
+  const handleCloseWorkspace = async () => {
+    try {
+      if (isDesktop) {
+        await workspaceManager.closeWorkspace().catch(() => {});
+        await filesystemService.unwatch().catch(() => {});
+      }
+      if (!isOffline && room.roomCode && !room.roomCode.startsWith('local-')) {
+        stompService.disconnect();
+      }
+      sessionStorage.removeItem('codex_current_workspace');
+      sessionStorage.removeItem('codex_active_file');
+      sessionStorage.removeItem('codex_open_tabs');
+      sessionStorage.removeItem('codex_expanded_folders');
+      sessionStorage.removeItem('codex_active_activity');
+    } catch (err) {
+      console.warn('[VSCodeEditor] Close workspace cleanup error:', err);
     }
     if (onCloseWorkspace) onCloseWorkspace();
   };
@@ -990,17 +1637,14 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   const handleOpenDiff = async (filePath, staged = false) => {
     if (!isDesktop || !room.diskPath) return;
     try {
-      const fullPath = filePath.startsWith('/') || filePath.includes(':')
-        ? filePath
-        : `${room.diskPath.replace(/\\/g, '/')}/${filePath}`;
-
-      const modifiedContent = await filesystemService.readFile(fullPath).catch(() => '');
-      const diffOutput = await gitService.diff(room.diskPath, filePath, staged).catch(() => '');
+      const activeRepo = gitManager.getActiveRepository();
+      const repoPath = activeRepo?.root || room.diskPath;
+      const diffModels = await gitDiff.getDiffModels(repoPath, filePath, staged, filesystemService);
 
       setDiffFile({
         path: filePath,
-        original: diffOutput ? `# Git Diff Output\n${diffOutput}` : modifiedContent,
-        modified: modifiedContent,
+        original: diffModels.original,
+        modified: diffModels.modified,
         language: getLanguageForFilename(filePath),
         isStaged: staged,
       });
@@ -1112,6 +1756,81 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
     }
   };
 
+  // Level 3E — Code Coverage Handlers
+  const handleRunCoverage = async () => {
+    if (!isDesktop) {
+      showToast('Code coverage requires CodeX Desktop mode.');
+      return;
+    }
+    try {
+      setShowBottomPanel(true);
+      setBottomPanelTab('output');
+      showToast('Running tests with code coverage...');
+      const res = await coverageManager.runCoverage({
+        workspaceRoot: room.diskPath || null,
+        fileTree,
+      });
+      if (res.success) {
+        showToast(`Coverage completed: ${res.projectCoverage.lines.pct}% lines covered`);
+      } else {
+        showToast(`Coverage failed: ${res.error}`);
+      }
+    } catch (err) {
+      showToast(`Coverage error: ${err.message || err}`);
+    }
+  };
+
+  const handleClearCoverage = () => {
+    coverageManager.clearCoverage(room.diskPath || null);
+    showToast('Coverage data cleared.');
+  };
+
+  const handleNextUncovered = () => {
+    if (!editorRef.current || !activeFile) {
+      showToast('Open a file to navigate uncovered lines.');
+      return;
+    }
+    const line = coverageManager.navigateNextUncovered(
+      editorRef.current,
+      activeFile.path || activeFile.name,
+      room.diskPath || null
+    );
+    if (line) {
+      showToast(`Jumped to line ${line}`);
+    } else {
+      showToast('No uncovered lines found in current file.');
+    }
+  };
+
+  const handlePrevUncovered = () => {
+    if (!editorRef.current || !activeFile) {
+      showToast('Open a file to navigate uncovered lines.');
+      return;
+    }
+    const line = coverageManager.navigatePreviousUncovered(
+      editorRef.current,
+      activeFile.path || activeFile.name,
+      room.diskPath || null
+    );
+    if (line) {
+      showToast(`Jumped to line ${line}`);
+    } else {
+      showToast('No uncovered lines found in current file.');
+    }
+  };
+
+  const handleOpenFileFromCoverage = (filePath) => {
+    if (!filePath) return;
+    const norm = filePath.replace(/\\/g, '/');
+    const matched = fileTree.find((f) => {
+      const p = (f.path || f.name || '').replace(/\\/g, '/');
+      return p === norm || norm.endsWith(p) || p.endsWith(norm);
+    });
+    if (matched) {
+      handleOpenFile(matched.id);
+    }
+  };
+
   // Keyboard Shortcuts (Cmd/Ctrl + S, P, Shift+P, B, `, W, F5, Shift+B, Shift+T)
   useEffect(() => {
     const handleGlobalKeyDown = (e) => {
@@ -1156,6 +1875,27 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       if (isCtrlOrMeta && e.shiftKey && e.key.toLowerCase() === 't') {
         e.preventDefault();
         handleRunAllTests();
+        return;
+      }
+
+      // Cmd+. / Ctrl+. : Quick Fix
+      if (isCtrlOrMeta && !e.shiftKey && e.key === '.') {
+        e.preventDefault();
+        codeActionManager.triggerQuickFix(editorRef.current);
+        return;
+      }
+
+      // Ctrl+Shift+R / Cmd+Shift+R: Refactor
+      if (isCtrlOrMeta && e.shiftKey && e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        codeActionManager.triggerRefactor(editorRef.current);
+        return;
+      }
+
+      // Shift+Alt+O: Organize Imports
+      if (e.shiftKey && e.altKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        codeActionManager.triggerOrganizeImports(editorRef.current);
         return;
       }
 
@@ -1256,16 +1996,124 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
   // Commands for Command Palette
   const commandPaletteCommands = [
     {
+      id: 'file.openFile',
+      label: 'File: Open File...',
+      icon: <Files size={13} color="#60a5fa" />,
+      action: handleOpenFilePicker,
+    },
+    {
       id: 'file.openFolder',
       label: 'File: Open Folder...',
       shortcut: '⌘O',
       icon: <HardDrive size={13} color="#60a5fa" />,
+      action: handleOpenFolderDialog,
+    },
+    {
+      id: 'file.openWorkspace',
+      label: 'File: Open Workspace...',
+      icon: <FolderOpen size={13} color="#60a5fa" />,
+      action: handleOpenWorkspaceDialog,
+    },
+    {
+      id: 'file.saveWorkspace',
+      label: 'File: Save Workspace',
+      icon: <Save size={13} color="#4ade80" />,
+      action: handleSaveWorkspaceDialog,
+    },
+    {
+      id: 'file.closeWorkspace',
+      label: 'File: Close Workspace',
+      icon: <X size={13} color="#f87171" />,
+      action: handleCloseWorkspace,
+    },
+    {
+      id: 'workspace.addFolder',
+      label: 'Workspace: Add Folder...',
+      icon: <PlusSquare size={13} color="#4ade80" />,
+      action: handleAddFolderDialog,
+    },
+    {
+      id: 'workspace.removeFolder',
+      label: 'Workspace: Remove Folder...',
+      icon: <MinusCircle size={13} color="#f87171" />,
+      action: handleRemoveFolderDialog,
+    },
+    {
+      id: 'workspace.rename',
+      label: 'Workspace: Rename...',
+      icon: <Edit2 size={13} color="#eab308" />,
+      action: handleRenameWorkspace,
+    },
+    {
+      id: 'workspace.reload',
+      label: 'Workspace: Reload',
+      icon: <RotateCw size={13} color="#60a5fa" />,
+      action: handleReloadWorkspace,
+    },
+    {
+      id: 'workspace.showRecent',
+      label: 'Workspace: Show Recent',
+      icon: <FolderGit2 size={13} color="#60a5fa" />,
+      action: () => setShowRecentWorkspaces(true),
+    },
+    {
+      id: 'workspace.clearRecent',
+      label: 'Workspace: Clear Recent Workspaces',
+      icon: <Trash2 size={13} color="#f87171" />,
+      action: handleClearRecentWorkspaces,
+    },
+    {
+      id: 'explorer.refresh',
+      label: 'Explorer: Refresh',
+      icon: <RotateCw size={13} color="#60a5fa" />,
+      action: handleRefreshExplorer,
+    },
+    {
+      id: 'explorer.collapseFolders',
+      label: 'Explorer: Collapse Folders',
+      icon: <FolderTree size={13} color="#858585" />,
+      action: () => {
+        workspaceState.collapseAllFolders();
+        handleRefreshExplorer();
+        showToast('Collapsed all folders');
+      },
+    },
+    {
+      id: 'explorer.newFile',
+      label: 'Explorer: New File',
+      icon: <FilePlus size={13} color="#4ade80" />,
       action: async () => {
-        if (isDesktop) {
-          const folder = await filesystemService.pickFolder();
-          if (folder) {
-            window.location.reload();
-          }
+        const root = currentWorkspace?.root || room.diskPath;
+        if (!root) return;
+        const name = window.prompt('New file name:');
+        if (!name || !name.trim()) return;
+        try {
+          const target = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/${name.trim()}`;
+          workspaceManager.recordInternalWrite(target);
+          await workspaceFiles.createFile(target);
+          await handleRefreshExplorer();
+          showToast(`Created file: ${name.trim()}`);
+        } catch (err) {
+          showToast(`Create file error: ${err.message || err}`);
+        }
+      },
+    },
+    {
+      id: 'explorer.newFolder',
+      label: 'Explorer: New Folder',
+      icon: <FolderPlus size={13} color="#eab308" />,
+      action: async () => {
+        const root = currentWorkspace?.root || room.diskPath;
+        if (!root) return;
+        const name = window.prompt('New folder name:');
+        if (!name || !name.trim()) return;
+        try {
+          const target = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/${name.trim()}`;
+          await workspaceFiles.createFolder(target);
+          await handleRefreshExplorer();
+          showToast(`Created folder: ${name.trim()}`);
+        } catch (err) {
+          showToast(`Create folder error: ${err.message || err}`);
         }
       },
     },
@@ -1298,14 +2146,26 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       action: () => setActiveActivity((prev) => (prev ? null : 'explorer')),
     },
     {
-      id: 'git.status',
-      label: 'Git: Refresh Status',
+      id: 'git.refresh',
+      label: 'Git: Refresh',
       icon: <RotateCw size={13} color="#60a5fa" />,
       action: refreshGitStatus,
     },
     {
+      id: 'git.stageFile',
+      label: 'Git: Stage File',
+      icon: <GitBranch size={13} color="#4ade80" />,
+      action: async () => {
+        if (!room.diskPath || !activeFile) return;
+        const relPath = activeFile.path ? activeFile.path.replace(room.diskPath, '').replace(/^\//, '') : activeFile.name;
+        await gitService.stage(room.diskPath, [relPath]);
+        refreshGitStatus();
+        showToast(`Staged ${activeFile.name}`);
+      },
+    },
+    {
       id: 'git.stageAll',
-      label: 'Git: Stage All Changes',
+      label: 'Git: Stage All',
       icon: <GitBranch size={13} color="#4ade80" />,
       action: async () => {
         if (!room.diskPath) return;
@@ -1316,9 +2176,57 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       },
     },
     {
+      id: 'git.unstageFile',
+      label: 'Git: Unstage File',
+      icon: <GitBranch size={13} color="#f87171" />,
+      action: async () => {
+        if (!room.diskPath || !activeFile) return;
+        const relPath = activeFile.path ? activeFile.path.replace(room.diskPath, '').replace(/^\//, '') : activeFile.name;
+        await gitService.unstage(room.diskPath, [relPath]);
+        refreshGitStatus();
+        showToast(`Unstaged ${activeFile.name}`);
+      },
+    },
+    {
+      id: 'git.unstageAll',
+      label: 'Git: Unstage All',
+      icon: <GitBranch size={13} color="#f87171" />,
+      action: async () => {
+        if (!room.diskPath) return;
+        const stagedList = gitStatus.staged || [];
+        await gitService.unstage(room.diskPath, stagedList.map((f) => f.path));
+        refreshGitStatus();
+        showToast('Unstaged all changes');
+      },
+    },
+    {
+      id: 'git.commit',
+      label: 'Git: Commit',
+      icon: <GitCommit size={13} color="#60a5fa" />,
+      action: async () => {
+        if (!room.diskPath) return;
+        const msg = window.prompt('Commit message:');
+        if (!msg || !msg.trim()) return;
+        await gitService.commit(room.diskPath, msg.trim());
+        refreshGitStatus();
+        showToast('Committed changes successfully');
+      },
+    },
+    {
+      id: 'git.push',
+      label: 'Git: Push',
+      icon: <ArrowUp size={13} color="#4ade80" />,
+      action: async () => {
+        if (!room.diskPath) return;
+        await gitService.push(room.diskPath);
+        refreshGitStatus();
+        showToast('Pushed commits to remote');
+      },
+    },
+    {
       id: 'git.pull',
-      label: 'Git: Pull Latest Changes',
-      icon: <GitBranch size={13} color="#60a5fa" />,
+      label: 'Git: Pull',
+      icon: <ArrowDown size={13} color="#60a5fa" />,
       action: async () => {
         if (!room.diskPath) return;
         await gitService.pull(room.diskPath);
@@ -1327,15 +2235,60 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       },
     },
     {
-      id: 'git.push',
-      label: 'Git: Push Commits to Remote',
+      id: 'git.fetch',
+      label: 'Git: Fetch',
+      icon: <RotateCcw size={13} color="#60a5fa" />,
+      action: async () => {
+        if (!room.diskPath) return;
+        await gitService.fetch(room.diskPath);
+        refreshGitStatus();
+        showToast('Fetched updates from remote');
+      },
+    },
+    {
+      id: 'git.createBranch',
+      label: 'Git: Create Branch',
       icon: <GitBranch size={13} color="#4ade80" />,
       action: async () => {
         if (!room.diskPath) return;
-        await gitService.push(room.diskPath);
+        const bName = window.prompt('New branch name:');
+        if (!bName || !bName.trim()) return;
+        await gitBranches.createBranch(room.diskPath, bName.trim(), true);
         refreshGitStatus();
-        showToast('Pushed commits to remote');
+        showToast(`Created branch "${bName.trim()}"`);
       },
+    },
+    {
+      id: 'git.switchBranch',
+      label: 'Git: Switch Branch',
+      icon: <GitBranch size={13} color="#60a5fa" />,
+      action: async () => {
+        if (!room.diskPath) return;
+        const bName = window.prompt('Switch to branch:');
+        if (!bName || !bName.trim()) return;
+        await gitBranches.checkout(room.diskPath, bName.trim());
+        refreshGitStatus();
+        showToast(`Switched to branch "${bName.trim()}"`);
+      },
+    },
+    {
+      id: 'git.stash',
+      label: 'Git: Stash',
+      icon: <GitBranch size={13} color="#eab308" />,
+      action: async () => {
+        if (!room.diskPath) return;
+        const msg = window.prompt('Stash message (optional):');
+        if (msg === null) return;
+        await gitStash.save(room.diskPath, msg || undefined, true);
+        refreshGitStatus();
+        showToast('Stashed changes');
+      },
+    },
+    {
+      id: 'git.showHistory',
+      label: 'Git: Show History',
+      icon: <GitCommit size={13} color="#60a5fa" />,
+      action: () => setShowGitHistory(true),
     },
     {
       id: 'file.revealInFinder',
@@ -1511,6 +2464,65 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
       label: 'View: Show Test Explorer',
       icon: <FlaskConical size={13} color="#38bdf8" />,
       action: () => setActiveActivity('test'),
+    },
+    // Level 3E — Code Coverage Commands
+    {
+      id: 'coverage.run',
+      label: 'Coverage: Run Tests with Coverage',
+      icon: <ShieldCheck size={13} color="#38bdf8" />,
+      action: handleRunCoverage,
+    },
+    {
+      id: 'coverage.clear',
+      label: 'Coverage: Clear Coverage Data',
+      icon: <Square size={13} color="#f87171" />,
+      action: handleClearCoverage,
+    },
+    {
+      id: 'coverage.nextUncovered',
+      label: 'Coverage: Next Uncovered Line',
+      icon: <ArrowDown size={13} color="#f59e0b" />,
+      action: handleNextUncovered,
+    },
+    {
+      id: 'coverage.prevUncovered',
+      label: 'Coverage: Previous Uncovered Line',
+      icon: <ArrowUp size={13} color="#f59e0b" />,
+      action: handlePrevUncovered,
+    },
+    {
+      id: 'coverage.openPanel',
+      label: 'View: Show Code Coverage',
+      icon: <ShieldCheck size={13} color="#4ade80" />,
+      action: () => setActiveActivity('coverage'),
+    },
+    // Level 3F — Refactoring & Code Actions Commands
+    {
+      id: 'editor.action.quickFix',
+      label: 'Quick Fix...',
+      shortcut: '⌘.',
+      icon: <Lightbulb size={13} color="#facc15" />,
+      action: () => codeActionManager.triggerQuickFix(editorRef.current),
+    },
+    {
+      id: 'editor.action.refactor',
+      label: 'Refactor...',
+      shortcut: '⌃⇧R',
+      icon: <Wand2 size={13} color="#a855f7" />,
+      action: () => codeActionManager.triggerRefactor(editorRef.current),
+    },
+    {
+      id: 'editor.action.codeAction',
+      label: 'Code Action...',
+      icon: <Lightbulb size={13} color="#60a5fa" />,
+      action: () => codeActionManager.triggerCodeAction(editorRef.current),
+    },
+    {
+      id: 'editor.action.organizeImports',
+      label: 'Organize Imports',
+      shortcut: '⇧⌥O',
+      icon: <Wand2 size={13} color="#38bdf8" />,
+      action: () => codeActionManager.triggerOrganizeImports(editorRef.current),
     },
   ];
 
@@ -1958,6 +2970,13 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               <FlaskConical size={19} />
             </button>
             <button
+              className={`activity-btn ${activeActivity === 'coverage' ? 'active' : ''}`}
+              title={activeActivity === 'coverage' ? 'Close Code Coverage' : 'Code Coverage'}
+              onClick={() => setActiveActivity((prev) => (prev === 'coverage' ? null : 'coverage'))}
+            >
+              <ShieldCheck size={19} />
+            </button>
+            <button
               className={`activity-btn ${activeActivity === 'extensions' ? 'active' : ''}`}
               title={activeActivity === 'extensions' ? 'Close Extensions' : 'Extensions'}
               onClick={() => setActiveActivity((prev) => (prev === 'extensions' ? null : 'extensions'))}
@@ -1993,109 +3012,25 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
 
         {/* Primary Sidebar Panels */}
         {activeActivity === 'explorer' && (
-          <div className="vscode-sidebar">
-            <div className="sidebar-header">
-              <span className="sidebar-header-title">EXPLORER</span>
-              <div className="sidebar-actions">
-                <button
-                  className="sidebar-action-btn"
-                  title="New File"
-                  onClick={() => {
-                    setCreatingType('file');
-                    setCreatingTargetFolderId(null);
-                    setNewEntryName('');
-                  }}
-                >
-                  <FilePlus size={14} />
-                </button>
-                <button
-                  className="sidebar-action-btn"
-                  title="New Folder"
-                  onClick={() => {
-                    setCreatingType('folder');
-                    setCreatingTargetFolderId(null);
-                    setNewEntryName('');
-                  }}
-                >
-                  <FolderPlus size={14} />
-                </button>
-                <button
-                  className="sidebar-action-btn"
-                  title="Collapse All Folders"
-                  onClick={() => setExpandedFolders(new Set())}
-                >
-                  <FolderTree size={14} />
-                </button>
-                <button
-                  className="sidebar-action-btn"
-                  title="Close Sidebar (Hide Explorer)"
-                  onClick={() => setActiveActivity(null)}
-                >
-                  <ChevronLeft size={14} />
-                </button>
-              </div>
-            </div>
-
-            {/* Folder Root Title */}
-            <div
-              className="sidebar-root-row"
-              onClick={() => setIsRootFolderCollapsed((prev) => !prev)}
-              style={{ cursor: 'pointer', userSelect: 'none' }}
-              title={isRootFolderCollapsed ? 'Expand workspace folder' : 'Collapse workspace folder'}
-            >
-              {isRootFolderCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-              <span className="sidebar-root-title">{(room.title || 'WORKSPACE').toUpperCase()}</span>
-            </div>
-
-            {!isRootFolderCollapsed && (
-              <div className="file-tree-container">
-                {creatingType && creatingTargetFolderId === null && (
-                  <form onSubmit={handleCreateEntry} className="inline-create-form" style={{ paddingLeft: '14px' }}>
-                    <FileIcon isFolder={creatingType === 'folder'} isOpen={false} size={14} />
-                    <input
-                      type="text"
-                      className="inline-create-input"
-                      placeholder={`New ${creatingType} name...`}
-                      value={newEntryName}
-                      onChange={(e) => setNewEntryName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleCreateEntry(e);
-                        } else if (e.key === 'Escape') {
-                          e.preventDefault();
-                          setCreatingType(null);
-                          setNewEntryName('');
-                        }
-                      }}
-                      onBlur={() => {
-                        if (newEntryName.trim()) {
-                          handleCreateEntry();
-                        } else {
-                          setCreatingType(null);
-                        }
-                      }}
-                      autoFocus
-                    />
-                  </form>
-                )}
-
-                {renderTreeItems(null, 0)}
-
-                {fileTree.filter((f) => f.id !== 'folder-root').length === 0 && !creatingType && (
-                  <div className="tree-empty-prompt">
-                    <p>Folder is empty.</p>
-                    <p>Click <FilePlus size={13} style={{ display: 'inline', verticalAlign: 'middle' }} /> above to create a file.</p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <ExplorerPanel
+            workspace={currentWorkspace}
+            fileTree={fileTree}
+            activeFile={activeFile}
+            gitStatus={gitStatus}
+            onSelectFile={handleSelectFile}
+            onDoubleClickFile={handleSelectFile}
+            onRefresh={handleRefreshExplorer}
+            onOpenFolder={handleOpenFolderDialog}
+            onOpenWorkspace={handleOpenWorkspaceDialog}
+            onAddFolder={handleAddFolderDialog}
+            showToast={showToast}
+          />
         )}
 
         {activeActivity === 'git' && (
           <SourceControlPanel
             projectRoot={room.diskPath || null}
+            filesystemService={filesystemService}
             gitStatus={gitStatus}
             onRefresh={refreshGitStatus}
             onOpenDiff={handleOpenDiff}
@@ -2130,6 +3065,17 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
               setShowBottomPanel(true);
               setBottomPanelTab(tab);
             }}
+            showToast={showToast}
+          />
+        )}
+
+        {activeActivity === 'coverage' && (
+          <CoveragePanel
+            workspaceRoot={room.diskPath || null}
+            fileTree={fileTree}
+            activeFile={activeFile?.path || activeFile?.name}
+            onOpenFile={handleOpenFileFromCoverage}
+            editor={editorRef.current}
             showToast={showToast}
           />
         )}
@@ -2403,6 +3349,17 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         </div>
       </div>
 
+      {/* Refactoring Preview Modal */}
+      {refactorPreview && (
+        <RefactorPreviewModal
+          isOpen={Boolean(refactorPreview)}
+          title={refactorPreview.title}
+          preview={refactorPreview.preview}
+          onApply={() => codeActionManager.applyPreview()}
+          onCancel={() => codeActionManager.cancelPreview()}
+        />
+      )}
+
       {/* Quick Open Modal (⌘P / Ctrl+P) */}
       <QuickOpenModal
         isOpen={showQuickOpen}
@@ -2417,6 +3374,16 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         onClose={() => setShowCommandPalette(false)}
         commands={commandPaletteCommands}
       />
+
+      {/* Git History Modal */}
+      {showGitHistory && (
+        <GitHistoryModal
+          repoPath={gitManager.getActiveRepository()?.root || room.diskPath}
+          onOpenDiff={handleOpenDiff}
+          onClose={() => setShowGitHistory(false)}
+          showToast={showToast}
+        />
+      )}
 
       {/* Collaboration Popover */}
       <CollabPopover
@@ -2434,6 +3401,16 @@ export default function VSCodeEditor({ room, user, onCloseWorkspace }) {
         <TeamModal
           user={user}
           onClose={() => setShowTeamModal(false)}
+        />
+      )}
+
+      {/* Recent Workspaces Modal */}
+      {showRecentWorkspaces && (
+        <RecentWorkspacesModal
+          isOpen={showRecentWorkspaces}
+          onClose={() => setShowRecentWorkspaces(false)}
+          onOpenWorkspace={handleOpenWorkspaceFromPath}
+          showToast={showToast}
         />
       )}
 

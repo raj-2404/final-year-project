@@ -60,6 +60,25 @@ export class LspClient {
           rename: { dynamicRegistration: false, prepareSupport: true },
           formatting: { dynamicRegistration: false },
           rangeFormatting: { dynamicRegistration: false },
+          codeAction: {
+            dynamicRegistration: false,
+            codeActionLiteralSupport: {
+              codeActionKind: {
+                valueSet: [
+                  '',
+                  'quickfix',
+                  'refactor',
+                  'refactor.extract',
+                  'refactor.inline',
+                  'refactor.rewrite',
+                  'source',
+                  'source.organizeImports',
+                  'source.fixAll',
+                ],
+              },
+            },
+            isPreferredSupport: true,
+          },
           publishDiagnostics: { relatedInformation: true },
         },
         workspace: {
@@ -129,6 +148,24 @@ export class LspClient {
       params,
     };
     return this.process.send(message);
+  }
+
+  /**
+   * Requests code actions for a document range and diagnostics context.
+   * @param {string} uriStr - Canonical document URI
+   * @param {object} range - LSP Range { start: { line, character }, end: { line, character } }
+   * @param {object} context - { diagnostics: [], only: [] }
+   * @returns {Promise<Array>}
+   */
+  async getCodeActions(uriStr, range, context = {}) {
+    return this.sendRequest('textDocument/codeAction', {
+      textDocument: { uri: uriStr },
+      range,
+      context: {
+        diagnostics: context.diagnostics || [],
+        only: context.only,
+      },
+    });
   }
 
   /**

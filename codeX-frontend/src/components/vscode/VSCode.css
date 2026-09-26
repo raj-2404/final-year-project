@@ -1831,3 +1831,163 @@
   color: #4ec9b0;
 }
 
+/* ============================================================ */
+/* LEVEL 3E — CODE COVERAGE STYLES */
+/* ============================================================ */
+
+/* Monaco Line Decorations Gutter Markers */
+.codex-coverage-gutter-covered {
+  background: #2ea043 !important;
+  width: 4px !important;
+  margin-left: 2px !important;
+  border-radius: 2px;
+}
+
+.codex-coverage-gutter-partial {
+  background: #d29922 !important;
+  width: 4px !important;
+  margin-left: 2px !important;
+  border-radius: 2px;
+}
+
+.codex-coverage-gutter-uncovered {
+  background: #f85149 !important;
+  width: 4px !important;
+  margin-left: 2px !important;
+  border-radius: 2px;
+}
+
+/* Coverage Panel Styles */
+.codex-coverage-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: #cccccc;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  font-size: 12px;
+  background: var(--vscode-sideBar-background, #252526);
+  user-select: none;
+}
+
+.codex-coverage-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.codex-coverage-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.codex-coverage-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.codex-coverage-card-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888888;
+  margin-bottom: 4px;
+}
+
+.codex-coverage-card-val {
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.codex-coverage-progress-bar {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.codex-coverage-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.coverage-high {
+  color: #2ea043;
+}
+.coverage-high-bg {
+  background: #2ea043;
+}
+
+.coverage-medium {
+  color: #d29922;
+}
+.coverage-medium-bg {
+  background: #d29922;
+}
+
+.coverage-low {
+  color: #f85149;
+}
+.coverage-low-bg {
+  background: #f85149;
+}
+
+.codex-coverage-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+  transition: background 0.1s ease;
+}
+
+.codex-coverage-file-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.codex-coverage-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 8px;
+  color: #e1e1e1;
+}
+
+.codex-git-file-pct {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  font-size: 11.5px;
+}
+
+/* Git Gutter Indicators (Level 3G) */
+.codex-git-glyph-added {
+  border-left: 3px solid #2ea043 !important;
+  margin-left: 2px;
+}
+
+.codex-git-glyph-modified {
+  border-left: 3px solid #007acc !important;
+  margin-left: 2px;
+}
+
+.codex-git-glyph-deleted {
+  border-left: 3px solid #f85149 !important;
+  margin-left: 2px;
+}
+

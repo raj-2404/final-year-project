@@ -89,6 +89,73 @@ impl FileWatcher {
         Ok(())
     }
 
+    pub fn watch_roots(&self, app_handle: AppHandle, roots: Vec<String>) -> Result<(), String> {
+        self.unwatch();
+
+        if roots.is_empty() {
+            return Ok(());
+        }
+
+        let app_handle_clone = app_handle.clone();
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                let paths: Vec<String> = event
+                    .paths
+                    .iter()
+                    .filter_map(|p| {
+                        let s = p.to_string_lossy().to_string();
+                        let s_norm = s.replace('\\', "/");
+                        if s_norm.contains("/.git/")
+                            || s_norm.contains("/node_modules/")
+                            || s_norm.contains("/target/")
+                            || s_norm.contains("/dist/")
+                            || s_norm.contains("/build/")
+                            || s_norm.ends_with(".DS_Store")
+                        {
+                            None
+                        } else {
+                            Some(s)
+                        }
+                    })
+                    .collect();
+
+                if paths.is_empty() {
+                    return;
+                }
+
+                let kind = match event.kind {
+                    EventKind::Create(_) => "create",
+                    EventKind::Modify(_) => "modify",
+                    EventKind::Remove(_) => "remove",
+                    _ => "other",
+                };
+
+                let payload = FsChangeEvent {
+                    kind: kind.to_string(),
+                    paths,
+                };
+
+                let _ = app_handle_clone.emit("fs-change", payload);
+            }
+        })
+        .map_err(|e| format!("Failed to create watcher: {}", e))?;
+
+        for root in &roots {
+            let p = Path::new(root);
+            if p.exists() {
+                let _ = watcher.watch(p, RecursiveMode::Recursive);
+            }
+        }
+
+        let mut w_lock = self.watcher.lock().unwrap();
+        *w_lock = Some(watcher);
+
+        let mut p_lock = self.current_path.lock().unwrap();
+        *p_lock = roots.first().cloned();
+
+        Ok(())
+    }
+
     pub fn unwatch(&self) {
         let mut w_lock = self.watcher.lock().unwrap();
         *w_lock = None;

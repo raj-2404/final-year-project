@@ -12,6 +12,8 @@ import lombok.NoArgsConstructor;
 public class CodeMessage {
     private String roomCode;
     private String fileId;
+    private String filePath;
+    private String fileName;
     private String code;
     private String senderId;
 }

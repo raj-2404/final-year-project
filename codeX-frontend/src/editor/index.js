@@ -6,3 +6,4 @@
 export * from './languages/index.js';
 export * from './themes/index.js';
 export * from './options/index.js';
+export * from './codeActions/index.js';

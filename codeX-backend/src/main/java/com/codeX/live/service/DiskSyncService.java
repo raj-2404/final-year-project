@@ -132,6 +132,11 @@ public class DiskSyncService {
         }
     }
 
+    public Path getRoomDiskPath(String roomCode) {
+        if (roomCode == null) return null;
+        return roomDiskPaths.get(roomCode);
+    }
+
     /**
      * Writes all items from virtual file tree JSON to physical disk.
      */

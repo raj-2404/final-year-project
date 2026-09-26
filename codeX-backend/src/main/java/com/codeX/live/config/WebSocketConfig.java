@@ -29,4 +29,11 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         // Application prefix for messages handled by @MessageMapping methods
         registry.setApplicationDestinationPrefixes("/app");
     }
+
+    @Override
+    public void configureWebSocketTransport(org.springframework.web.socket.config.annotation.WebSocketTransportRegistration registration) {
+        registration.setMessageSizeLimit(20 * 1024 * 1024); // 20 MB
+        registration.setSendBufferSizeLimit(40 * 1024 * 1024); // 40 MB
+        registration.setSendTimeLimit(20 * 1000); // 20 seconds
+    }
 }

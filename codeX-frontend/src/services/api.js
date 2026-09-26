@@ -138,6 +138,15 @@ export const roomsApi = {
       body: JSON.stringify({ fileTreeJson }),
     });
   },
+
+  async getFileContent(roomCode, fileId, path) {
+    const params = new URLSearchParams();
+    if (fileId) params.append('fileId', fileId);
+    if (path) params.append('path', path);
+    return await request(`/api/rooms/${roomCode}/files/content?${params.toString()}`, {
+      method: 'GET',
+    });
+  },
 };
 
 export const teamApi = {

@@ -16,9 +16,11 @@ import {
   Layers,
   Search,
   FlaskConical,
+  ShieldCheck,
 } from 'lucide-react';
 import { isDesktopApp } from '../../services/native/platform.js';
 import { testManager } from '../../testing/testManager.js';
+import { coverageManager } from '../../coverage/coverageManager.js';
 import { TestStatus, TestNodeType, TestLifecycleState } from '../../testing/testTypes.js';
 
 export default function TestExplorerPanel({
@@ -87,6 +89,25 @@ export default function TestExplorerPanel({
       await testManager.runAllTests();
     } catch (err) {
       showToast?.(`Test error: ${err.message || err}`);
+    }
+  };
+
+  const handleRunCoverage = async () => {
+    if (!isDesktop) {
+      showToast?.('Local coverage requires CodeX Desktop mode.');
+      return;
+    }
+    try {
+      if (onOpenBottomTab) onOpenBottomTab('output');
+      showToast?.('Running tests with code coverage...');
+      const res = await coverageManager.runCoverage({ workspaceRoot, fileTree });
+      if (res.success) {
+        showToast?.(`Coverage complete: ${res.projectCoverage.lines.pct}% lines covered.`);
+      } else {
+        showToast?.(`Coverage failed: ${res.error}`);
+      }
+    } catch (err) {
+      showToast?.(`Coverage error: ${err.message || err}`);
     }
   };
 
@@ -339,6 +360,15 @@ export default function TestExplorerPanel({
               <Play size={12} fill="currentColor" />
             </button>
           )}
+
+          <button
+            className="sidebar-action-btn"
+            title="Run Tests with Coverage"
+            onClick={handleRunCoverage}
+            style={{ color: '#38bdf8' }}
+          >
+            <ShieldCheck size={13} />
+          </button>
 
           <button
             className="sidebar-action-btn"

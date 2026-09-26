@@ -27,6 +27,7 @@ import { runManager } from '../../build/runManager.js';
 import { BuildProcessState } from '../../build/buildTypes.js';
 import { testManager } from '../../testing/testManager.js';
 import { TestLifecycleState } from '../../testing/testTypes.js';
+import { coverageManager } from '../../coverage/coverageManager.js';
 
 export default function BottomPanel({
   isOpen,
@@ -51,8 +52,10 @@ export default function BottomPanel({
   const [outputChannel, setOutputChannel] = useState('tasks');
   const [outputLogs, setOutputLogs] = useState([]);
   const [testLogs, setTestLogs] = useState([]);
+  const [coverageLogs, setCoverageLogs] = useState([]);
   const [activeTaskState, setActiveTaskState] = useState(BuildProcessState.IDLE);
   const [activeTestState, setActiveTestState] = useState(TestLifecycleState.IDLE);
+  const [activeCoverageState, setActiveCoverageState] = useState('IDLE');
   const [activeTaskName, setActiveTaskName] = useState('');
   const outputContainerRef = useRef(null);
   const [hostUsername, setHostUsername] = useState('');
@@ -107,6 +110,15 @@ export default function BottomPanel({
       setActiveTestState(state);
     });
 
+    const unsubCoverage = coverageManager.onEvent((event) => {
+      if (event.type === 'coverage-output') {
+        setCoverageLogs((prev) => [...prev, { text: event.text, type: event.streamType, time: Date.now() }]);
+        setOutputChannel('coverage');
+      } else if (event.type === 'coverage-state-change') {
+        setActiveCoverageState(event.state);
+      }
+    });
+
     return () => {
       unsubBuildOut();
       unsubBuildState();
@@ -114,6 +126,7 @@ export default function BottomPanel({
       unsubRunState();
       unsubTestOut();
       unsubTestState();
+      unsubCoverage();
     };
   }, []);
 
@@ -122,11 +135,13 @@ export default function BottomPanel({
     if (outputContainerRef.current && currentTab === 'output') {
       outputContainerRef.current.scrollTop = outputContainerRef.current.scrollHeight;
     }
-  }, [outputLogs, testLogs, currentTab, outputChannel]);
+  }, [outputLogs, testLogs, coverageLogs, currentTab, outputChannel]);
 
   const handleClearOutput = () => {
     if (outputChannel === 'tests') {
       setTestLogs([]);
+    } else if (outputChannel === 'coverage') {
+      setCoverageLogs([]);
     } else {
       setOutputLogs([]);
     }
@@ -141,6 +156,9 @@ export default function BottomPanel({
     }
     if (testManager.getState() === TestLifecycleState.RUNNING || testManager.getState() === TestLifecycleState.STOPPING) {
       await testManager.stopTests();
+    }
+    if (coverageManager.isBusy()) {
+      coverageManager.stopCoverage();
     }
   };
 
@@ -602,17 +620,20 @@ export default function BottomPanel({
               >
                 <option value="tasks">Tasks: Build &amp; Run</option>
                 <option value="tests">Tests: Test Output</option>
+                <option value="coverage">Coverage: Test Coverage</option>
                 <option value="system">CodeX System / LiveSync</option>
               </select>
 
-              {(outputChannel === 'tasks' || outputChannel === 'tests') && (
+              {(outputChannel === 'tasks' || outputChannel === 'tests' || outputChannel === 'coverage') && (
                 <>
                   {((outputChannel === 'tasks' &&
                     (activeTaskState === BuildProcessState.RUNNING ||
                       activeTaskState === BuildProcessState.STARTING)) ||
                     (outputChannel === 'tests' &&
                       (activeTestState === TestLifecycleState.RUNNING ||
-                        activeTestState === TestLifecycleState.STOPPING))) && (
+                        activeTestState === TestLifecycleState.STOPPING)) ||
+                    (outputChannel === 'coverage' &&
+                      activeCoverageState === 'RUNNING')) && (
                     <button
                       type="button"
                       className="btn-terminal-action danger"
@@ -852,6 +873,84 @@ export default function BottomPanel({
                 </div>
               ) : (
                 testLogs.map((entry, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      color:
+                        entry.type === 'stderr'
+                          ? '#f87171'
+                          : entry.type === 'system'
+                          ? '#38bdf8'
+                          : '#d4d4d4',
+                    }}
+                  >
+                    {entry.text}
+                  </span>
+                ))
+              )}
+            </div>
+          ) : outputChannel === 'coverage' ? (
+            <div
+              ref={outputContainerRef}
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '8px 12px',
+                fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', monospace",
+                fontSize: '12px',
+                lineHeight: '1.5',
+                backgroundColor: '#181818',
+                color: '#cccccc',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  paddingBottom: '8px',
+                  marginBottom: '8px',
+                  borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                  fontSize: '11px',
+                  color: '#858585',
+                }}
+              >
+                <span
+                  style={{
+                    padding: '1px 6px',
+                    borderRadius: '3px',
+                    fontWeight: 600,
+                    backgroundColor:
+                      activeCoverageState === 'RUNNING'
+                        ? 'rgba(34, 197, 94, 0.2)'
+                        : activeCoverageState === 'FAILED' || activeCoverageState === 'ERROR'
+                        ? 'rgba(239, 68, 68, 0.2)'
+                        : activeCoverageState === 'COMPLETED'
+                        ? 'rgba(59, 130, 246, 0.2)'
+                        : 'rgba(255, 255, 255, 0.05)',
+                    color:
+                      activeCoverageState === 'RUNNING'
+                        ? '#4ade80'
+                        : activeCoverageState === 'FAILED' || activeCoverageState === 'ERROR'
+                        ? '#f87171'
+                        : activeCoverageState === 'COMPLETED'
+                        ? '#60a5fa'
+                        : '#858585',
+                  }}
+                >
+                  {activeCoverageState}
+                </span>
+                <span>Code Coverage Process</span>
+              </div>
+
+              {coverageLogs.length === 0 ? (
+                <div style={{ color: '#6e7681', padding: '16px 0' }}>
+                  No coverage output yet. Run tests with coverage from the Coverage Panel (Activity Bar Shield icon) or Test Explorer.
+                </div>
+              ) : (
+                coverageLogs.map((entry, idx) => (
                   <span
                     key={idx}
                     style={{

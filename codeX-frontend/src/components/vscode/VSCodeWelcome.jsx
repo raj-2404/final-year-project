@@ -58,9 +58,16 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
     } catch {}
   };
 
+  const getRecentsStorageKey = () => {
+    return user?.id
+      ? `recentWorkspaces_user_${user.id}`
+      : (user?.username ? `recentWorkspaces_user_${user.username}` : 'recentWorkspaces_guest');
+  };
+
   useEffect(() => {
     try {
-      const recents = JSON.parse(localStorage.getItem('recentWorkspaces') || '[]');
+      const key = getRecentsStorageKey();
+      const recents = JSON.parse(localStorage.getItem(key) || '[]');
       setRecentWorkspaces(recents);
     } catch {
       setRecentWorkspaces([]);
@@ -69,11 +76,12 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
     refreshData();
     const interval = setInterval(refreshData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [user?.id, user?.username]);
 
   const saveToRecents = (room) => {
     try {
-      const current = JSON.parse(localStorage.getItem('recentWorkspaces') || '[]');
+      const key = getRecentsStorageKey();
+      const current = JSON.parse(localStorage.getItem(key) || '[]');
       const filtered = current.filter((r) => r.roomCode !== room.roomCode);
       const updated = [
         {
@@ -82,12 +90,13 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
           language: room.language,
           visibility: room.visibility,
           diskPath: room.diskPath,
-          ownerName: room.ownerName || room.ownerUsername,
+          ownerName: room.ownerName || room.ownerUsername || user?.name || user?.username,
           openedAt: new Date().toLocaleDateString(),
         },
         ...filtered,
       ].slice(0, 8);
-      localStorage.setItem('recentWorkspaces', JSON.stringify(updated));
+      localStorage.setItem(key, JSON.stringify(updated));
+      setRecentWorkspaces(updated);
     } catch {}
   };
 
@@ -166,13 +175,33 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
           return;
         }
 
+        // Preload text content for small source files (< 200KB) so remote teammates and web joiners receive code immediately
+        let entriesWithContent = folderData.entries;
+        if (Array.isArray(folderData.entries)) {
+          try {
+            entriesWithContent = await Promise.all(
+              folderData.entries.map(async (entry) => {
+                if (entry.type === 'file' && entry.path && (!entry.size || entry.size < 200000)) {
+                  try {
+                    const text = await filesystemService.readFile(entry.path);
+                    return { ...entry, content: text };
+                  } catch {
+                    return entry;
+                  }
+                }
+                return entry;
+              })
+            );
+          } catch {}
+        }
+
         let room = null;
         if (user) {
           try {
             room = await roomsApi.createRoom({
               title: folderData.name,
               visibility: projectVisibility,
-              initialTreeJson: JSON.stringify(folderData.entries),
+              initialTreeJson: JSON.stringify(entriesWithContent),
             });
           } catch (apiErr) {
             console.warn('[Welcome] Backend unavailable, opening folder locally:', apiErr);
@@ -185,12 +214,12 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
             title: folderData.name,
             visibility: 'LOCAL',
             isOffline: true,
-            codeContent: JSON.stringify(folderData.entries),
+            codeContent: JSON.stringify(entriesWithContent),
           };
         }
 
         room.diskPath = folderData.path;
-        room.initialTree = folderData.entries;
+        room.initialTree = entriesWithContent;
 
         saveToRecents(room);
         if (onOpenWorkspace) {
@@ -296,12 +325,37 @@ export default function VSCodeWelcome({ user, onOpenWorkspace, onLogout, onLogin
       }
 
       if (workspace.diskPath) {
-        room.diskPath = workspace.diskPath;
         if (isDesktopApp()) {
           try {
-            const entries = await filesystemService.listDirectory(workspace.diskPath);
-            room.codeContent = JSON.stringify(entries);
-          } catch {}
+            const exists = await filesystemService.exists(workspace.diskPath);
+            if (exists) {
+              room.diskPath = workspace.diskPath;
+              const entries = await filesystemService.listDirectory(workspace.diskPath);
+              if (room.codeContent && room.codeContent.trim().startsWith('[')) {
+                try {
+                  const existingList = JSON.parse(room.codeContent);
+                  const contentMap = new Map();
+                  for (const ex of existingList) {
+                    if (ex.id && ex.content) contentMap.set(ex.id, ex.content);
+                  }
+                  for (const entry of entries) {
+                    if (contentMap.has(entry.id)) {
+                      entry.content = contentMap.get(entry.id);
+                    }
+                  }
+                } catch {}
+              }
+              room.codeContent = JSON.stringify(entries);
+              room.initialTree = entries;
+            } else {
+              room.diskPath = null;
+            }
+          } catch {
+            room.diskPath = null;
+          }
+        } else {
+          // On Web, local disk paths are never applicable
+          room.diskPath = null;
         }
       }
 

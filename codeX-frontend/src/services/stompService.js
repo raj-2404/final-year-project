@@ -8,14 +8,22 @@ class StompCollaborationService {
     this.connected = false;
     this.subscriptions = new Map();
     this.clientId = 'client-' + Math.random().toString(36).substring(2, 9);
+    this.pendingCodeChanges = new Map();
   }
 
   connect(roomCode, callbacks = {}) {
     this.disconnect();
 
+    const isLocalHost =
+      typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const isTauri =
+      typeof window !== 'undefined' &&
+      (window.__TAURI_INTERNALS__ || window.__TAURI__);
+
     const wsEndpoint =
       import.meta.env.VITE_WS_URL ||
-      (typeof window !== 'undefined' && (window.__TAURI_INTERNALS__ || window.__TAURI__) ? 'http://localhost:5010/ws' : '/ws');
+      (isTauri || isLocalHost ? 'http://localhost:5010/ws' : '/ws');
 
     return new Promise((resolve, reject) => {
       this.client = new Client({
@@ -118,12 +126,24 @@ class StompCollaborationService {
 
   sendTreeChange(roomCode, type, fileTree, activeFileId, userName) {
     if (!this.connected || !this.client) return;
+
+    // Sanitize tree items so large file contents don't blow WebSocket buffer limits
+    const sanitizedTree = Array.isArray(fileTree)
+      ? fileTree.map((item) => {
+          if (item.content && item.content.length > 50000) {
+            const { content, ...rest } = item;
+            return rest;
+          }
+          return item;
+        })
+      : fileTree;
+
     this.client.publish({
       destination: `/app/room/${roomCode}/tree`,
       body: JSON.stringify({
         roomCode,
         type, // "TREE_UPDATE", "FILE_CREATE", "FILE_DELETE", "FILE_RENAME", "SYNC"
-        fileTreeJson: JSON.stringify(fileTree),
+        fileTreeJson: JSON.stringify(sanitizedTree),
         activeFileId,
         senderId: this.clientId,
         senderName: userName,
@@ -131,17 +151,71 @@ class StompCollaborationService {
     });
   }
 
-  sendCodeChange(roomCode, fileId, code) {
+  requestTreeSync(roomCode, userName) {
     if (!this.connected || !this.client) return;
     this.client.publish({
-      destination: `/app/room/${roomCode}/code`,
+      destination: `/app/room/${roomCode}/tree/sync`,
       body: JSON.stringify({
         roomCode,
-        fileId,
-        code,
+        type: 'SYNC',
         senderId: this.clientId,
+        senderName: userName || 'Developer',
       }),
     });
+  }
+
+  sendCodeChange(roomCode, fileId, code, filePathOrOptions, maybeFileName) {
+    if (!this.connected || !this.client) return;
+
+    let filePath = null;
+    let fileName = null;
+    if (typeof filePathOrOptions === 'object' && filePathOrOptions !== null) {
+      filePath = filePathOrOptions.filePath || null;
+      fileName = filePathOrOptions.fileName || null;
+    } else if (typeof filePathOrOptions === 'string') {
+      filePath = filePathOrOptions;
+      fileName = typeof maybeFileName === 'string' ? maybeFileName : null;
+    }
+
+    const key = `${roomCode}:${fileId || filePath || fileName}`;
+    const now = Date.now();
+    const entry = this.pendingCodeChanges.get(key) || { lastSendTime: 0, timer: null };
+
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+
+    const doPublish = () => {
+      entry.timer = null;
+      if (!this.connected || !this.client) return;
+      try {
+        this.client.publish({
+          destination: `/app/room/${roomCode}/code`,
+          body: JSON.stringify({
+            roomCode,
+            fileId,
+            filePath,
+            fileName,
+            code,
+            senderId: this.clientId,
+          }),
+        });
+      } catch (err) {
+        console.warn('[STOMP] sendCodeChange failed:', err);
+      }
+      entry.lastSendTime = Date.now();
+    };
+
+    // Throttle: maximum 1 packet per 60ms per file during rapid typing
+    const elapsed = now - entry.lastSendTime;
+    if (elapsed >= 60) {
+      doPublish();
+    } else {
+      entry.timer = setTimeout(doPublish, 60 - elapsed);
+    }
+
+    this.pendingCodeChanges.set(key, entry);
   }
 
   sendLanguageChange(roomCode, language) {
@@ -299,6 +373,13 @@ class StompCollaborationService {
       try {
         this.client.deactivate();
       } catch {}
+    }
+
+    if (this.pendingCodeChanges) {
+      this.pendingCodeChanges.forEach((entry) => {
+        if (entry.timer) clearTimeout(entry.timer);
+      });
+      this.pendingCodeChanges.clear();
     }
 
     this.connected = false;
